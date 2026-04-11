@@ -82,5 +82,6 @@ func (s *Server) Start(ctx context.Context, store storage.Storage, fileStore fil
 func (s *Server) routes(h *Handler) *chi.Mux {
 	r := chi.NewRouter()
 	r.Get("/health", h.Health)
+	r.Post("/api/v1/avatars", h.AvatarUpload)
 	return r
 }

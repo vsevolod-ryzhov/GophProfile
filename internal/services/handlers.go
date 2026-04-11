@@ -1,9 +1,14 @@
 package services
 
 import (
+	"GophProfile/internal/errs"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"path/filepath"
+	"regexp"
 	"time"
 
 	"GophProfile/internal/filestorage"
@@ -11,6 +16,53 @@ import (
 
 	"go.uber.org/zap"
 )
+
+const (
+	userIDHeader    = "X-User-ID"
+	userIDMaxLength = 255
+
+	imageFormField = "image"
+	maxUploadBytes = 10 << 20
+	sniffLen       = 512
+)
+
+var allowedMIMETypes = map[string]struct{}{
+	"image/jpeg": {},
+	"image/png":  {},
+	"image/webp": {},
+}
+
+type uploadedFile struct {
+	Data     []byte
+	FileName string
+	MIMEType string
+	Size     int64
+}
+
+var userIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._\-@:]+$`)
+
+func extractUserID(r *http.Request) (string, error) {
+	raw := r.Header.Get(userIDHeader)
+	if raw == "" {
+		return "", errs.UserIDHeaderNotFound
+	}
+	if len(raw) > userIDMaxLength {
+		return "", errs.UserIDHeaderExceedsMaximumLength
+	}
+	if !userIDPattern.MatchString(raw) {
+		return "", errs.UserIDHeaderContainsInvalidChar
+	}
+	return raw, nil
+}
+
+func writeJSONError(w http.ResponseWriter, status int, err error, details string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":   err.Error(),
+		"details": details,
+	})
+}
 
 type Handler struct {
 	storage     storage.Storage
@@ -50,4 +102,88 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) AvatarUpload(w http.ResponseWriter, r *http.Request) {
+	userID, usrErr := extractUserID(r)
+	if usrErr != nil {
+		writeJSONError(w, http.StatusBadRequest, usrErr, "")
+		return
+	}
+
+	upload, uploadErr := readUploadedFile(r)
+	if uploadErr != nil {
+		h.logger.Warn("avatar upload rejected",
+			zap.String("user_id", userID),
+			zap.Error(uploadErr),
+		)
+
+		status := http.StatusBadRequest
+		if errors.Is(uploadErr, errs.FileTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		writeJSONError(w, status, uploadErr, "")
+		return
+	}
+
+	_ = userID
+	_ = upload
+}
+
+func readUploadedFile(r *http.Request) (*uploadedFile, error) {
+	r.Body = http.MaxBytesReader(nil, r.Body, maxUploadBytes)
+
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+		if errors.Is(err, http.ErrNotMultipart) || errors.Is(err, http.ErrMissingBoundary) {
+			return nil, errs.ExpectedMultipartFormData
+		}
+
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return nil, errs.FileTooLarge
+		}
+		return nil, errs.InvalidMultipartBody
+	}
+
+	file, header, err := r.FormFile(imageFormField)
+	if err != nil {
+		return nil, errs.MissingFileField
+	}
+	defer file.Close()
+
+	if header.Size <= 0 {
+		return nil, errs.EmptyFile
+	}
+	if header.Size > maxUploadBytes {
+		return nil, errs.FileTooLarge
+	}
+
+	head := make([]byte, sniffLen)
+	h, err := io.ReadFull(file, head)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, errs.FileReadError
+	}
+	head = head[:h]
+
+	mime := http.DetectContentType(head)
+	if _, ok := allowedMIMETypes[mime]; !ok {
+		return nil, errs.UnsupportedMediaType
+	}
+
+	rest, err := io.ReadAll(file)
+	if err != nil {
+		return nil, errs.FileReadError
+	}
+	data := append(head, rest...)
+
+	if int64(len(data)) != header.Size {
+		return nil, errs.FileSizeMismatch
+	}
+
+	return &uploadedFile{
+		Data:     data,
+		FileName: filepath.Base(header.Filename),
+		MIMEType: mime,
+		Size:     header.Size,
+	}, nil
 }
