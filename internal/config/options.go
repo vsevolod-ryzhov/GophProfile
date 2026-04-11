@@ -29,35 +29,33 @@ func ParseFlags() {
 	flag.BoolVar(&Options.MinioUseSSL, "minio-use-ssl", false, "Use SSL for MinIO connection")
 	flag.Parse()
 
-	if envRunAddr, exists := os.LookupEnv("SERVER_ADDRESS"); exists {
-		Options.AppPort = envRunAddr
-	}
+	applyEnvOverrides(os.LookupEnv)
+}
 
-	if envDatabaseDSN, exists := os.LookupEnv("DATABASE_DSN"); exists {
-		Options.DatabaseDSN = envDatabaseDSN
-	}
+// lookupFunc matches os.LookupEnv so tests can inject a fake env.
+type lookupFunc func(string) (string, bool)
 
-	if certFile, exists := os.LookupEnv("SERVER_CERT"); exists {
-		Options.CertFile = certFile
+// applyEnvOverrides overrides Options fields with environment values
+// (or whatever the lookup function returns) when they are set.
+// Split from ParseFlags so it can be unit-tested without touching
+// the global flag.CommandLine.
+func applyEnvOverrides(lookup lookupFunc) {
+	overrides := []struct {
+		env   string
+		apply func(string)
+	}{
+		{"SERVER_ADDRESS", func(v string) { Options.AppPort = v }},
+		{"DATABASE_DSN", func(v string) { Options.DatabaseDSN = v }},
+		{"SERVER_CERT", func(v string) { Options.CertFile = v }},
+		{"SERVER_KEY", func(v string) { Options.KeyFile = v }},
+		{"MINIO_ENDPOINT", func(v string) { Options.MinioEndpoint = v }},
+		{"MINIO_ACCESS_KEY", func(v string) { Options.MinioAccessKey = v }},
+		{"MINIO_SECRET_KEY", func(v string) { Options.MinioSecretKey = v }},
+		{"MINIO_BUCKET", func(v string) { Options.MinioBucket = v }},
 	}
-
-	if keyFile, exists := os.LookupEnv("SERVER_KEY"); exists {
-		Options.KeyFile = keyFile
-	}
-
-	if v, exists := os.LookupEnv("MINIO_ENDPOINT"); exists {
-		Options.MinioEndpoint = v
-	}
-
-	if v, exists := os.LookupEnv("MINIO_ACCESS_KEY"); exists {
-		Options.MinioAccessKey = v
-	}
-
-	if v, exists := os.LookupEnv("MINIO_SECRET_KEY"); exists {
-		Options.MinioSecretKey = v
-	}
-
-	if v, exists := os.LookupEnv("MINIO_BUCKET"); exists {
-		Options.MinioBucket = v
+	for _, o := range overrides {
+		if v, ok := lookup(o.env); ok {
+			o.apply(v)
+		}
 	}
 }
