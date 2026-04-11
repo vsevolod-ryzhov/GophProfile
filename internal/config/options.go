@@ -17,7 +17,7 @@ var Options struct {
 	MinioUseSSL    bool
 }
 
-func parseFlags() {
+func ParseFlags() {
 	flag.StringVar(&Options.AppPort, "a", "localhost:8080", "The address to bind the app to")
 	flag.StringVar(&Options.CertFile, "c", "", "The TLS certificate file")
 	flag.StringVar(&Options.KeyFile, "k", "", "The TLS key file")

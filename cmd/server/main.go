@@ -1,4 +1,4 @@
-package server
+package main
 
 import (
 	"GophProfile/internal/config"
@@ -6,7 +6,6 @@ import (
 	"GophProfile/internal/services"
 	"GophProfile/internal/storage"
 	"context"
-	"flag"
 	"fmt"
 	"os/signal"
 	"syscall"
@@ -17,7 +16,7 @@ import (
 var logger *zap.Logger
 
 func Run(ctx context.Context) error {
-	flag.Parse()
+	config.ParseFlags()
 
 	repo, storageErr := storage.NewPostgresStorage(config.Options.DatabaseDSN)
 	if storageErr != nil {
