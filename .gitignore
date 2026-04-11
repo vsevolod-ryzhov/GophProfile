@@ -26,3 +26,6 @@ crt/*.crt
 crt/*.key
 crt/*.csr
 crt/*.srl
+
+# folder with files used for testing
+/test-data
