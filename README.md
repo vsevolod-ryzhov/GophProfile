@@ -2,6 +2,7 @@
 - docker-compose up -d
 - docker-compose down
 - go run cmd/server/main.go -d="host=localhost user=postgres_user password=postgres_password dbname=postgres_db sslmode=disable" -c="crt/server.crt" -k="crt/server.key"
+- go run cmd/worker/main.go -rabbit-url="amqp://guest:guest@localhost:5672/" -minio-endpoint="localhost:9002" -minio-access-key="minio_user" -minio-secret-key="minio_password" -minio-bucket="gkeeper-secrets"
 - go test $(go list ./...) -coverprofile=coverage.out && go tool cover -func=coverage.out | grep total
 
 
@@ -34,3 +35,8 @@ dd if=/dev/urandom of=/tmp/big.bin bs=1m count=15 && curl -v --cacert crt/ca.crt
 ```shell
 curl -v --cacert crt/ca.crt -H "X-User-ID: test-user-1" -H "Content-Type: application/json" -d '{"foo":"bar"}' https://localhost:8080/api/v1/avatars
 ```           
+
+## Delete
+```shell
+curl -X DELETE -v --cacert crt/ca.crt -H "X-User-ID: test-user-1" https://localhost:8080/api/v1/avatars/e04994ae-8544-4d4a-9f44-1b708440c59d 
+```

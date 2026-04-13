@@ -44,6 +44,36 @@ func (_m *Storage) CreateNewAvatarRecord(ctx context.Context, userID string, fil
 	return r0, r1
 }
 
+// GetAvatarByID provides a mock function with given fields: ctx, avatarID
+func (_m *Storage) GetAvatarByID(ctx context.Context, avatarID string) (*model.Avatar, error) {
+	ret := _m.Called(ctx, avatarID)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetAvatarByID")
+	}
+
+	var r0 *model.Avatar
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string) (*model.Avatar, error)); ok {
+		return rf(ctx, avatarID)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string) *model.Avatar); ok {
+		r0 = rf(ctx, avatarID)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*model.Avatar)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string) error); ok {
+		r1 = rf(ctx, avatarID)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // Ping provides a mock function with given fields: ctx
 func (_m *Storage) Ping(ctx context.Context) error {
 	ret := _m.Called(ctx)
@@ -55,6 +85,24 @@ func (_m *Storage) Ping(ctx context.Context) error {
 	var r0 error
 	if rf, ok := ret.Get(0).(func(context.Context) error); ok {
 		r0 = rf(ctx)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// SoftDeleteAvatar provides a mock function with given fields: ctx, avatarID
+func (_m *Storage) SoftDeleteAvatar(ctx context.Context, avatarID string) error {
+	ret := _m.Called(ctx, avatarID)
+
+	if len(ret) == 0 {
+		panic("no return value specified for SoftDeleteAvatar")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = rf(ctx, avatarID)
 	} else {
 		r0 = ret.Error(0)
 	}

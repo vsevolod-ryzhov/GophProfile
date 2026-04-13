@@ -23,6 +23,8 @@ type Storage interface {
 	Ping(ctx context.Context) error
 	CreateNewAvatarRecord(ctx context.Context, userID, fileName, mimeType string, size int64) (*model.Avatar, error)
 	UpdateAvatarS3Key(ctx context.Context, avatarID string, s3Key string) error
+	GetAvatarByID(ctx context.Context, avatarID string) (*model.Avatar, error)
+	SoftDeleteAvatar(ctx context.Context, avatarID string) error
 }
 
 // PostgresStorage implements the Storage interface using PostgreSQL.
@@ -97,6 +99,36 @@ func (s *PostgresStorage) CreateNewAvatarRecord(ctx context.Context, userID, fil
 		return nil, err
 	}
 	return &avatar, nil
+}
+
+func (s *PostgresStorage) GetAvatarByID(ctx context.Context, avatarID string) (*model.Avatar, error) {
+	var avatar model.Avatar
+	err := sq.Select("id", "user_id", "file_name", "mime_type", "size_bytes", "COALESCE(s3_key, '')",
+		"upload_status", "processing_status", "created_at", "updated_at").
+		From("avatars").
+		Where(sq.Eq{"id": avatarID}).
+		Where("deleted_at IS NULL").
+		PlaceholderFormat(sq.Dollar).
+		RunWith(s.db).
+		QueryRowContext(ctx).
+		Scan(&avatar.ID, &avatar.UserID, &avatar.FileName, &avatar.MimeType, &avatar.SizeBytes, &avatar.S3Key,
+			&avatar.UploadStatus, &avatar.ProcessingStatus, &avatar.CreatedAt, &avatar.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &avatar, nil
+}
+
+func (s *PostgresStorage) SoftDeleteAvatar(ctx context.Context, avatarID string) error {
+	_, err := sq.Update("avatars").
+		Set("deleted_at", sq.Expr("NOW()")).
+		Set("updated_at", sq.Expr("NOW()")).
+		Where(sq.Eq{"id": avatarID}).
+		Where("deleted_at IS NULL").
+		PlaceholderFormat(sq.Dollar).
+		RunWith(s.db).
+		ExecContext(ctx)
+	return err
 }
 
 func (s *PostgresStorage) UpdateAvatarS3Key(ctx context.Context, avatarID string, s3Key string) error {

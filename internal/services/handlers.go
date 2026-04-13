@@ -3,6 +3,7 @@ package services
 import (
 	"GophProfile/internal/errs"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +13,11 @@ import (
 	"regexp"
 	"time"
 
+	"GophProfile/internal/broker"
 	"GophProfile/internal/filestorage"
 	"GophProfile/internal/storage"
 
+	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
 
@@ -68,11 +71,12 @@ func writeJSONError(w http.ResponseWriter, status int, err error, details string
 type Handler struct {
 	storage     storage.Storage
 	fileStorage filestorage.FileStorage
+	publisher   broker.Publisher
 	logger      *zap.Logger
 }
 
-func NewHandler(s storage.Storage, fs filestorage.FileStorage, logger *zap.Logger) *Handler {
-	return &Handler{storage: s, fileStorage: fs, logger: logger}
+func NewHandler(s storage.Storage, fs filestorage.FileStorage, pub broker.Publisher, logger *zap.Logger) *Handler {
+	return &Handler{storage: s, fileStorage: fs, publisher: pub, logger: logger}
 }
 
 type healthResponse struct {
@@ -168,6 +172,61 @@ func (h *Handler) AvatarUpload(w http.ResponseWriter, r *http.Request) {
 		"status":     "processing",
 		"created_at": avatar.CreatedAt,
 	})
+}
+
+func (h *Handler) AvatarDelete(w http.ResponseWriter, r *http.Request) {
+	userID, usrErr := extractUserID(r)
+	if usrErr != nil {
+		writeJSONError(w, http.StatusBadRequest, usrErr, "")
+		return
+	}
+
+	avatarID := chi.URLParam(r, "avatar_id")
+	if avatarID == "" {
+		writeJSONError(w, http.StatusBadRequest, errs.AvatarNotFound, "")
+		return
+	}
+
+	avatar, err := h.storage.GetAvatarByID(r.Context(), avatarID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, errs.AvatarNotFound, "")
+			return
+		}
+		h.logger.Error("failed to get avatar",
+			zap.String("avatar_id", avatarID),
+			zap.Error(err),
+		)
+		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
+		return
+	}
+
+	if avatar.UserID != userID {
+		writeJSONError(w, http.StatusForbidden, errs.Forbidden, "")
+		return
+	}
+
+	if err := h.storage.SoftDeleteAvatar(r.Context(), avatarID); err != nil {
+		h.logger.Error("failed to soft-delete avatar",
+			zap.String("avatar_id", avatarID),
+			zap.Error(err),
+		)
+		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
+		return
+	}
+
+	s3Keys := []string{avatar.S3Key}
+	if err := h.publisher.PublishDelete(r.Context(), broker.AvatarDeleteEvent{
+		AvatarID: avatarID,
+		S3Keys:   s3Keys,
+	}); err != nil {
+		h.logger.Error("failed to publish delete event",
+			zap.String("avatar_id", avatarID),
+			zap.Error(err),
+		)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func readUploadedFile(r *http.Request) (*uploadedFile, error) {

@@ -15,4 +15,6 @@ var (
 	UnsupportedMediaType             = errors.New("unsupported media type")
 	FileSizeMismatch                 = errors.New("file size mismatch")
 	InternalError                    = errors.New("internal server error")
+	AvatarNotFound                   = errors.New("avatar not found")
+	Forbidden                        = errors.New("you can only delete your own avatars")
 )

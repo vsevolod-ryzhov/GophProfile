@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"GophProfile/internal/broker"
 	"GophProfile/internal/filestorage"
 	"GophProfile/internal/storage"
 
@@ -33,8 +34,8 @@ func NewServer(config *ServerConfig, logger *zap.Logger) *Server {
 	}
 }
 
-func (s *Server) Start(ctx context.Context, store storage.Storage, fileStore filestorage.FileStorage) error {
-	handler := NewHandler(store, fileStore, s.logger)
+func (s *Server) Start(ctx context.Context, store storage.Storage, fileStore filestorage.FileStorage, pub broker.Publisher) error {
+	handler := NewHandler(store, fileStore, pub, s.logger)
 
 	s.httpServer = &http.Server{
 		Addr:         s.config.AppPort,
@@ -83,5 +84,6 @@ func (s *Server) routes(h *Handler) *chi.Mux {
 	r := chi.NewRouter()
 	r.Get("/health", h.Health)
 	r.Post("/api/v1/avatars", h.AvatarUpload)
+	r.Delete("/api/v1/avatars/{avatar_id}", h.AvatarDelete)
 	return r
 }

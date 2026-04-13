@@ -1,6 +1,7 @@
 package main
 
 import (
+	"GophProfile/internal/broker"
 	"GophProfile/internal/config"
 	"GophProfile/internal/filestorage"
 	"GophProfile/internal/services"
@@ -34,13 +35,19 @@ func Run(ctx context.Context) error {
 		return fmt.Errorf("failed to init minio: %w", err)
 	}
 
+	pub, err := broker.NewRabbitPublisher(config.Options.RabbitURL)
+	if err != nil {
+		return fmt.Errorf("failed to init rabbitmq publisher: %w", err)
+	}
+	defer pub.Close()
+
 	server := services.NewServer(&services.ServerConfig{
 		AppPort:  config.Options.AppPort,
 		CertFile: config.Options.CertFile,
 		KeyFile:  config.Options.KeyFile,
 	}, logger)
 
-	serverErr := server.Start(ctx, repo, fileStore)
+	serverErr := server.Start(ctx, repo, fileStore, pub)
 	if serverErr != nil {
 		return serverErr
 	}
