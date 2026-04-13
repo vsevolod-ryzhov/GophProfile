@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"GophProfile/internal/model"
 	"context"
 	"database/sql"
 	"errors"
@@ -11,6 +12,8 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/golang-migrate/migrate/v4/source/github"
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	sq "github.com/Masterminds/squirrel"
 )
 
 // Storage defines the interface for persistent data operations.
@@ -18,6 +21,8 @@ import (
 //go:generate mockery
 type Storage interface {
 	Ping(ctx context.Context) error
+	CreateNewAvatarRecord(ctx context.Context, userID, fileName, mimeType string, size int64) (*model.Avatar, error)
+	UpdateAvatarS3Key(ctx context.Context, avatarID string, s3Key string) error
 }
 
 // PostgresStorage implements the Storage interface using PostgreSQL.
@@ -76,4 +81,32 @@ func applyMigrations(db *sql.DB) error {
 // Ping verifies that the database connection is alive.
 func (s *PostgresStorage) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
+}
+
+func (s *PostgresStorage) CreateNewAvatarRecord(ctx context.Context, userID, fileName, mimeType string, size int64) (*model.Avatar, error) {
+	var avatar model.Avatar
+	err := (sq.Insert("avatars").
+		Columns("user_id", "file_name", "mime_type", "size_bytes").
+		Values(userID, fileName, mimeType, size).
+		Suffix("RETURNING id, user_id, file_name, mime_type, size_bytes, upload_status, processing_status, created_at, updated_at").
+		PlaceholderFormat(sq.Dollar).
+		RunWith(s.db).
+		QueryRowContext(ctx)).
+		Scan(&avatar.ID, &avatar.UserID, &avatar.FileName, &avatar.MimeType, &avatar.SizeBytes, &avatar.UploadStatus, &avatar.ProcessingStatus, &avatar.CreatedAt, &avatar.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &avatar, nil
+}
+
+func (s *PostgresStorage) UpdateAvatarS3Key(ctx context.Context, avatarID string, s3Key string) error {
+	_, err := sq.Update("avatars").
+		Set("s3_key", s3Key).
+		Set("upload_status", "uploaded").
+		Set("updated_at", sq.Expr("NOW()")).
+		Where(sq.Eq{"id": avatarID}).
+		PlaceholderFormat(sq.Dollar).
+		RunWith(s.db).
+		ExecContext(ctx)
+	return err
 }

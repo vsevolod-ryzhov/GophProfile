@@ -14,4 +14,5 @@ var (
 	FileReadError                    = errors.New("file read error")
 	UnsupportedMediaType             = errors.New("unsupported media type")
 	FileSizeMismatch                 = errors.New("file size mismatch")
+	InternalError                    = errors.New("internal server error")
 )

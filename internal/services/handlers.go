@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -126,8 +127,47 @@ func (h *Handler) AvatarUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = userID
-	_ = upload
+	avatar, dbErr := h.storage.CreateNewAvatarRecord(r.Context(), userID, upload.FileName, upload.MIMEType, upload.Size)
+	if dbErr != nil {
+		h.logger.Warn("avatar upload rejected",
+			zap.String("user_id", userID),
+			zap.Error(dbErr),
+		)
+		status := http.StatusBadRequest
+		writeJSONError(w, status, dbErr, "")
+		return
+	}
+
+	objectKey := fmt.Sprintf("%s/%s", userID, avatar.ID)
+	if err := h.fileStorage.Upload(r.Context(), objectKey, upload.Data); err != nil {
+		h.logger.Error("failed to upload file to storage",
+			zap.String("user_id", userID),
+			zap.String("avatar_id", avatar.ID.String()),
+			zap.Error(err),
+		)
+		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
+		return
+	}
+
+	if err := h.storage.UpdateAvatarS3Key(r.Context(), avatar.ID.String(), objectKey); err != nil {
+		h.logger.Error("failed to update avatar s3 key",
+			zap.String("user_id", userID),
+			zap.String("avatar_id", avatar.ID.String()),
+			zap.Error(err),
+		)
+		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":         avatar.ID,
+		"user_id":    avatar.UserID,
+		"url":        fmt.Sprintf("/api/v1/avatars/%s", avatar.ID),
+		"status":     "processing",
+		"created_at": avatar.CreatedAt,
+	})
 }
 
 func readUploadedFile(r *http.Request) (*uploadedFile, error) {
