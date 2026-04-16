@@ -128,6 +128,42 @@ func (_m *Storage) UpdateAvatarS3Key(ctx context.Context, avatarID string, s3Key
 	return r0
 }
 
+// UpdateProcessingStatus provides a mock function with given fields: ctx, avatarID, status
+func (_m *Storage) UpdateProcessingStatus(ctx context.Context, avatarID string, status string) error {
+	ret := _m.Called(ctx, avatarID, status)
+
+	if len(ret) == 0 {
+		panic("no return value specified for UpdateProcessingStatus")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, string) error); ok {
+		r0 = rf(ctx, avatarID, status)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// UpdateThumbnailKeys provides a mock function with given fields: ctx, avatarID, keys
+func (_m *Storage) UpdateThumbnailKeys(ctx context.Context, avatarID string, keys []string) error {
+	ret := _m.Called(ctx, avatarID, keys)
+
+	if len(ret) == 0 {
+		panic("no return value specified for UpdateThumbnailKeys")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, []string) error); ok {
+		r0 = rf(ctx, avatarID, keys)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // NewStorage creates a new instance of Storage. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
 func NewStorage(t interface {

@@ -11,6 +11,7 @@ import (
 const (
 	exchangeName = "avatars.exchange"
 	deleteKey    = "avatar.deleted"
+	uploadKey    = "avatar.uploaded"
 )
 
 // RabbitPublisher implements Publisher using RabbitMQ.
@@ -68,6 +69,25 @@ func (p *RabbitPublisher) PublishDelete(ctx context.Context, event AvatarDeleteE
 	)
 }
 
+func (p *RabbitPublisher) PublishUpload(ctx context.Context, event AvatarUploadEvent) error {
+	body, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal upload event: %w", err)
+	}
+
+	return p.ch.PublishWithContext(ctx,
+		exchangeName,
+		uploadKey,
+		false,
+		false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			DeliveryMode: amqp.Persistent,
+			Body:         body,
+		},
+	)
+}
+
 func (p *RabbitPublisher) Close() error {
 	if err := p.ch.Close(); err != nil {
 		p.conn.Close()
@@ -76,7 +96,10 @@ func (p *RabbitPublisher) Close() error {
 	return p.conn.Close()
 }
 
-const deleteQueue = "avatar.delete.queue"
+const (
+	deleteQueue = "avatar.delete.queue"
+	uploadQueue = "avatar.upload.queue"
+)
 
 // RabbitConsumer implements Consumer using RabbitMQ.
 type RabbitConsumer struct {
@@ -130,11 +153,22 @@ func NewRabbitConsumer(url string) (*RabbitConsumer, error) {
 		return nil, fmt.Errorf("failed to bind queue: %w", err)
 	}
 
+	if _, err := ch.QueueDeclare(uploadQueue, true, false, false, false, nil); err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("failed to declare upload queue: %w", err)
+	}
+
+	if err := ch.QueueBind(uploadQueue, uploadKey, exchangeName, false, nil); err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, fmt.Errorf("failed to bind upload queue: %w", err)
+	}
+
 	return &RabbitConsumer{conn: conn, ch: ch}, nil
 }
 
-// ConsumeDeletes returns a channel of Delivery values. The caller is responsible for calling Ack() after successful processing or Nack() on failure. The channel is closed when ctx is cancelled.
-func (c *RabbitConsumer) ConsumeDeletes(ctx context.Context) (<-chan Delivery, error) {
+func (c *RabbitConsumer) ConsumeDeletes(ctx context.Context) (<-chan DeleteDelivery, error) {
 	msgs, err := c.ch.ConsumeWithContext(ctx,
 		deleteQueue,
 		"",
@@ -145,10 +179,10 @@ func (c *RabbitConsumer) ConsumeDeletes(ctx context.Context) (<-chan Delivery, e
 		nil,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start consuming: %w", err)
+		return nil, fmt.Errorf("failed to start consuming deletes: %w", err)
 	}
 
-	out := make(chan Delivery)
+	out := make(chan DeleteDelivery)
 	go func() {
 		defer close(out)
 		for msg := range msgs {
@@ -157,7 +191,46 @@ func (c *RabbitConsumer) ConsumeDeletes(ctx context.Context) (<-chan Delivery, e
 				msg.Nack(false, false)
 				continue
 			}
-			d := Delivery{
+			d := DeleteDelivery{
+				Event: event,
+				Ack:   func() error { return msg.Ack(false) },
+				Nack:  func() error { return msg.Nack(false, true) },
+			}
+			select {
+			case out <- d:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return out, nil
+}
+
+func (c *RabbitConsumer) ConsumeUploads(ctx context.Context) (<-chan UploadDelivery, error) {
+	msgs, err := c.ch.ConsumeWithContext(ctx,
+		uploadQueue,
+		"",
+		false,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start consuming uploads: %w", err)
+	}
+
+	out := make(chan UploadDelivery)
+	go func() {
+		defer close(out)
+		for msg := range msgs {
+			var event AvatarUploadEvent
+			if err := json.Unmarshal(msg.Body, &event); err != nil {
+				msg.Nack(false, false)
+				continue
+			}
+			d := UploadDelivery{
 				Event: event,
 				Ack:   func() error { return msg.Ack(false) },
 				Nack:  func() error { return msg.Nack(false, true) },

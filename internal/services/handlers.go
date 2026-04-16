@@ -163,6 +163,18 @@ func (h *Handler) AvatarUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.publisher.PublishUpload(r.Context(), broker.AvatarUploadEvent{
+		AvatarID: avatar.ID.String(),
+		UserID:   userID,
+		S3Key:    objectKey,
+	}); err != nil {
+		h.logger.Error("failed to publish upload event",
+			zap.String("user_id", userID),
+			zap.String("avatar_id", avatar.ID.String()),
+			zap.Error(err),
+		)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{

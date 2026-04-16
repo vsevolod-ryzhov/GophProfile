@@ -4,6 +4,7 @@ import (
 	"GophProfile/internal/model"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -25,6 +26,8 @@ type Storage interface {
 	UpdateAvatarS3Key(ctx context.Context, avatarID string, s3Key string) error
 	GetAvatarByID(ctx context.Context, avatarID string) (*model.Avatar, error)
 	SoftDeleteAvatar(ctx context.Context, avatarID string) error
+	UpdateThumbnailKeys(ctx context.Context, avatarID string, keys []string) error
+	UpdateProcessingStatus(ctx context.Context, avatarID string, status string) error
 }
 
 // PostgresStorage implements the Storage interface using PostgreSQL.
@@ -135,6 +138,32 @@ func (s *PostgresStorage) UpdateAvatarS3Key(ctx context.Context, avatarID string
 	_, err := sq.Update("avatars").
 		Set("s3_key", s3Key).
 		Set("upload_status", "uploaded").
+		Set("updated_at", sq.Expr("NOW()")).
+		Where(sq.Eq{"id": avatarID}).
+		PlaceholderFormat(sq.Dollar).
+		RunWith(s.db).
+		ExecContext(ctx)
+	return err
+}
+
+func (s *PostgresStorage) UpdateThumbnailKeys(ctx context.Context, avatarID string, keys []string) error {
+	keysJSON, err := json.Marshal(keys)
+	if err != nil {
+		return fmt.Errorf("failed to marshal thumbnail keys: %w", err)
+	}
+	_, err = sq.Update("avatars").
+		Set("thumbnail_s3_keys", string(keysJSON)).
+		Set("updated_at", sq.Expr("NOW()")).
+		Where(sq.Eq{"id": avatarID}).
+		PlaceholderFormat(sq.Dollar).
+		RunWith(s.db).
+		ExecContext(ctx)
+	return err
+}
+
+func (s *PostgresStorage) UpdateProcessingStatus(ctx context.Context, avatarID string, status string) error {
+	_, err := sq.Update("avatars").
+		Set("processing_status", status).
 		Set("updated_at", sq.Expr("NOW()")).
 		Where(sq.Eq{"id": avatarID}).
 		PlaceholderFormat(sq.Dollar).

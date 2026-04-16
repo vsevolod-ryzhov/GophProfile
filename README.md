@@ -2,7 +2,7 @@
 - docker-compose up -d
 - docker-compose down
 - go run cmd/server/main.go -d="host=localhost user=postgres_user password=postgres_password dbname=postgres_db sslmode=disable" -c="crt/server.crt" -k="crt/server.key"
-- go run cmd/worker/main.go -rabbit-url="amqp://guest:guest@localhost:5672/" -minio-endpoint="localhost:9002" -minio-access-key="minio_user" -minio-secret-key="minio_password" -minio-bucket="gkeeper-secrets"
+- go run cmd/worker/main.go -d="host=localhost user=postgres_user password=postgres_password dbname=postgres_db sslmode=disable" -rabbit-url="amqp://guest:guest@localhost:5672/" -minio-endpoint="localhost:9002" -minio-access-key="minio_user" -minio-secret-key="minio_password" -minio-bucket="gkeeper-secrets"
 - go test $(go list ./...) -coverprofile=coverage.out && go tool cover -func=coverage.out | grep total
 
 
