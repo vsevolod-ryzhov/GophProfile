@@ -109,6 +109,59 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+func (h *Handler) AvatarInfo(w http.ResponseWriter, r *http.Request) {
+	userID, usrErr := extractUserID(r)
+	if usrErr != nil {
+		writeJSONError(w, http.StatusBadRequest, usrErr, "")
+		return
+	}
+
+	avatarID := chi.URLParam(r, "avatar_id")
+	if avatarID == "" {
+		writeJSONError(w, http.StatusBadRequest, errs.AvatarNotFound, "")
+		return
+	}
+
+	avatar, err := h.storage.GetAvatarByID(r.Context(), avatarID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, errs.AvatarNotFound, "")
+			return
+		}
+		h.logger.Error("failed to get avatar",
+			zap.String("avatar_id", avatarID),
+			zap.Error(err),
+		)
+		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
+		return
+	}
+
+	if avatar.UserID != userID {
+		writeJSONError(w, http.StatusForbidden, errs.Forbidden, "")
+		return
+	}
+
+	thumbnails := make([]map[string]string, 0, len(avatar.ThumbnailS3Keys))
+	for _, key := range avatar.ThumbnailS3Keys {
+		thumbnails = append(thumbnails, map[string]string{"s3_key": key})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":                avatar.ID,
+		"user_id":           avatar.UserID,
+		"file_name":         avatar.FileName,
+		"mime_type":         avatar.MimeType,
+		"size_bytes":        avatar.SizeBytes,
+		"s3_key":            avatar.S3Key,
+		"thumbnails":        thumbnails,
+		"processing_status": avatar.ProcessingStatus,
+		"created_at":        avatar.CreatedAt,
+		"updated_at":        avatar.UpdatedAt,
+	})
+}
+
 func (h *Handler) AvatarUpload(w http.ResponseWriter, r *http.Request) {
 	userID, usrErr := extractUserID(r)
 	if usrErr != nil {

@@ -133,7 +133,7 @@ func handleUpload(ctx context.Context, logger *zap.Logger, fileStore *filestorag
 	if err != nil {
 		log.Error("failed to download original image", zap.Error(err))
 		repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed")
-		upl.Nack()
+		upl.Ack() // permanent failure — object missing, retrying won't help
 		return
 	}
 
@@ -141,7 +141,7 @@ func handleUpload(ctx context.Context, logger *zap.Logger, fileStore *filestorag
 	if err != nil {
 		log.Error("failed to decode image", zap.Error(err))
 		repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed")
-		upl.Nack()
+		upl.Ack() // permanent failure — bad image data, retrying won't help
 		return
 	}
 
@@ -153,7 +153,7 @@ func handleUpload(ctx context.Context, logger *zap.Logger, fileStore *filestorag
 		if err := jpeg.Encode(&buf, thumb, &jpeg.Options{Quality: 85}); err != nil {
 			log.Error("failed to encode thumbnail", zap.String("size", size.Name), zap.Error(err))
 			repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed")
-			upl.Nack()
+			upl.Ack() // permanent failure — encode won't succeed on retry
 			return
 		}
 

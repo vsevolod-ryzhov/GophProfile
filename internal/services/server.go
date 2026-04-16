@@ -85,5 +85,7 @@ func (s *Server) routes(h *Handler) *chi.Mux {
 	r.Get("/health", h.Health)
 	r.Post("/api/v1/avatars", h.AvatarUpload)
 	r.Delete("/api/v1/avatars/{avatar_id}", h.AvatarDelete)
+	r.Get("/api/v1/avatars/{avatar_id}", h.AvatarInfo)
+
 	return r
 }

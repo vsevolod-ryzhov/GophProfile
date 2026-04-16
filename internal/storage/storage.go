@@ -106,8 +106,9 @@ func (s *PostgresStorage) CreateNewAvatarRecord(ctx context.Context, userID, fil
 
 func (s *PostgresStorage) GetAvatarByID(ctx context.Context, avatarID string) (*model.Avatar, error) {
 	var avatar model.Avatar
+	var thumbnailsJSON sql.NullString
 	err := sq.Select("id", "user_id", "file_name", "mime_type", "size_bytes", "COALESCE(s3_key, '')",
-		"upload_status", "processing_status", "created_at", "updated_at").
+		"upload_status", "processing_status", "COALESCE(thumbnail_s3_keys, '[]')", "created_at", "updated_at").
 		From("avatars").
 		Where(sq.Eq{"id": avatarID}).
 		Where("deleted_at IS NULL").
@@ -115,9 +116,14 @@ func (s *PostgresStorage) GetAvatarByID(ctx context.Context, avatarID string) (*
 		RunWith(s.db).
 		QueryRowContext(ctx).
 		Scan(&avatar.ID, &avatar.UserID, &avatar.FileName, &avatar.MimeType, &avatar.SizeBytes, &avatar.S3Key,
-			&avatar.UploadStatus, &avatar.ProcessingStatus, &avatar.CreatedAt, &avatar.UpdatedAt)
+			&avatar.UploadStatus, &avatar.ProcessingStatus, &thumbnailsJSON, &avatar.CreatedAt, &avatar.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if thumbnailsJSON.Valid && thumbnailsJSON.String != "" {
+		if err := json.Unmarshal([]byte(thumbnailsJSON.String), &avatar.ThumbnailS3Keys); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal thumbnail keys: %w", err)
+		}
 	}
 	return &avatar, nil
 }
