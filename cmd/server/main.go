@@ -33,7 +33,7 @@ func Run(ctx context.Context, logger *zap.Logger) error {
 		return fmt.Errorf("failed to init minio: %w", err)
 	}
 
-	pub, err := broker.NewRabbitPublisher(config.Options.RabbitURL)
+	pub, err := broker.NewRabbitPublisher(config.Options.RabbitURL, logger)
 	if err != nil {
 		return fmt.Errorf("failed to init rabbitmq publisher: %w", err)
 	}

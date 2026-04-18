@@ -59,7 +59,7 @@ func run(ctx context.Context, logger *zap.Logger) error {
 		return fmt.Errorf("failed to init postgres: %w", err)
 	}
 
-	consumer, err := broker.NewRabbitConsumer(config.Options.RabbitURL)
+	consumer, err := broker.NewRabbitConsumer(config.Options.RabbitURL, logger)
 	if err != nil {
 		return fmt.Errorf("failed to init rabbitmq consumer: %w", err)
 	}
@@ -116,12 +116,46 @@ func handleDelete(ctx context.Context, logger *zap.Logger, fileStore *filestorag
 	}
 }
 
+// failPermanent marks the avatar as failed and Acks the message so Rabbit drops it — use when the error is not worth retrying (bad image, missing object, etc).
+func failPermanent(ctx context.Context, log *zap.Logger, repo *storage.PostgresStorage, upl broker.UploadDelivery) {
+	if err := repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed"); err != nil {
+		log.Error("failed to set failed status", zap.Error(err))
+	}
+	if err := upl.Ack(); err != nil {
+		log.Error("failed to ack message", zap.Error(err))
+	}
+}
+
+// failTransient marks the avatar as failed and Nacks so the message is requeued — use for errors that may succeed on retry (broker/storage hiccups).
+func failTransient(ctx context.Context, log *zap.Logger, repo *storage.PostgresStorage, upl broker.UploadDelivery) {
+	if err := repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed"); err != nil {
+		log.Error("failed to set failed status", zap.Error(err))
+	}
+	if err := upl.Nack(); err != nil {
+		log.Error("failed to nack message", zap.Error(err))
+	}
+}
+
 func handleUpload(ctx context.Context, logger *zap.Logger, fileStore *filestorage.MinioStorage, repo *storage.PostgresStorage, upl broker.UploadDelivery) {
 	log := logger.With(
 		zap.String("avatar_id", upl.Event.AvatarID),
 		zap.String("user_id", upl.Event.UserID),
 	)
 	log.Info("received upload event, generating thumbnails")
+
+	avatar, err := repo.GetAvatarByID(ctx, upl.Event.AvatarID)
+	if err != nil {
+		log.Error("failed to load avatar", zap.Error(err))
+		upl.Nack()
+		return
+	}
+	if avatar.ProcessingStatus == "completed" {
+		log.Info("skipping already-processed upload")
+		if err := upl.Ack(); err != nil {
+			log.Error("failed to ack message", zap.Error(err))
+		}
+		return
+	}
 
 	if err := repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "processing"); err != nil {
 		log.Error("failed to set processing status", zap.Error(err))
@@ -132,16 +166,14 @@ func handleUpload(ctx context.Context, logger *zap.Logger, fileStore *filestorag
 	data, err := fileStore.Download(ctx, upl.Event.S3Key)
 	if err != nil {
 		log.Error("failed to download original image", zap.Error(err))
-		repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed")
-		upl.Ack() // permanent failure — object missing, retrying won't help
+		failPermanent(ctx, log, repo, upl) // object missing, retrying won't help
 		return
 	}
 
 	src, err := imaging.Decode(bytes.NewReader(data))
 	if err != nil {
 		log.Error("failed to decode image", zap.Error(err))
-		repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed")
-		upl.Ack() // permanent failure — bad image data, retrying won't help
+		failPermanent(ctx, log, repo, upl) // bad image data, retrying won't help
 		return
 	}
 
@@ -152,16 +184,14 @@ func handleUpload(ctx context.Context, logger *zap.Logger, fileStore *filestorag
 		var buf bytes.Buffer
 		if err := jpeg.Encode(&buf, thumb, &jpeg.Options{Quality: 85}); err != nil {
 			log.Error("failed to encode thumbnail", zap.String("size", size.Name), zap.Error(err))
-			repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed")
-			upl.Ack() // permanent failure — encode won't succeed on retry
+			failPermanent(ctx, log, repo, upl) // encode won't succeed on retry
 			return
 		}
 
 		key := fmt.Sprintf("thumbnails/%s/%s.jpg", upl.Event.AvatarID, size.Name)
 		if err := fileStore.Upload(ctx, key, buf.Bytes()); err != nil {
 			log.Error("failed to upload thumbnail", zap.String("key", key), zap.Error(err))
-			repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed")
-			upl.Nack()
+			failTransient(ctx, log, repo, upl)
 			return
 		}
 		thumbKeys = append(thumbKeys, key)
@@ -170,8 +200,7 @@ func handleUpload(ctx context.Context, logger *zap.Logger, fileStore *filestorag
 
 	if err := repo.UpdateThumbnailKeys(ctx, upl.Event.AvatarID, thumbKeys); err != nil {
 		log.Error("failed to save thumbnail keys", zap.Error(err))
-		repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed")
-		upl.Nack()
+		failTransient(ctx, log, repo, upl)
 		return
 	}
 

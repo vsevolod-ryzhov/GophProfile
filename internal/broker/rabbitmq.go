@@ -3,193 +3,257 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.uber.org/zap"
 )
 
 const (
 	exchangeName = "avatars.exchange"
 	deleteKey    = "avatar.deleted"
 	uploadKey    = "avatar.uploaded"
+
+	deleteQueue = "avatar.delete.queue"
+	uploadQueue = "avatar.upload.queue"
+
+	reconnectBaseDelay = time.Second
+	reconnectMaxDelay  = 30 * time.Second
 )
 
-// RabbitPublisher implements Publisher using RabbitMQ.
-type RabbitPublisher struct {
-	conn *amqp.Connection
-	ch   *amqp.Channel
+// ErrBrokerUnavailable is returned by Publish* when the broker is disconnected and
+// the reconnect loop has not yet restored the channel.
+var ErrBrokerUnavailable = errors.New("rabbitmq broker unavailable")
+
+// topologyFunc declares exchange/queues/bindings on a freshly opened channel.
+// Called on every (re)connect so the broker comes up to spec even after a restart.
+type topologyFunc func(ch *amqp.Channel) error
+
+func declarePublisherTopology(ch *amqp.Channel) error {
+	return ch.ExchangeDeclare(exchangeName, "direct", true, false, false, false, nil)
 }
 
-// NewRabbitPublisher connects to RabbitMQ, declares the exchange, and returns a ready publisher.
-func NewRabbitPublisher(url string) (*RabbitPublisher, error) {
-	conn, err := amqp.Dial(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to rabbitmq: %w", err)
+func declareConsumerTopology(ch *amqp.Channel) error {
+	if err := ch.ExchangeDeclare(exchangeName, "direct", true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare exchange: %w", err)
 	}
+	if _, err := ch.QueueDeclare(deleteQueue, true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare delete queue: %w", err)
+	}
+	if err := ch.QueueBind(deleteQueue, deleteKey, exchangeName, false, nil); err != nil {
+		return fmt.Errorf("bind delete queue: %w", err)
+	}
+	if _, err := ch.QueueDeclare(uploadQueue, true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare upload queue: %w", err)
+	}
+	if err := ch.QueueBind(uploadQueue, uploadKey, exchangeName, false, nil); err != nil {
+		return fmt.Errorf("bind upload queue: %w", err)
+	}
+	return nil
+}
 
+// connection wraps a shared dial+channel+topology lifecycle used by both the publisher and the consumer.
+type connection struct {
+	url      string
+	topology topologyFunc
+	logger   *zap.Logger
+
+	mu   sync.RWMutex
+	conn *amqp.Connection
+	ch   *amqp.Channel
+
+	done   chan struct{}
+	closed bool
+	wg     sync.WaitGroup
+}
+
+func newConnection(url string, topology topologyFunc, logger *zap.Logger) (*connection, error) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	c := &connection{
+		url:      url,
+		topology: topology,
+		logger:   logger,
+		done:     make(chan struct{}),
+	}
+	if err := c.dial(); err != nil {
+		return nil, err
+	}
+	c.wg.Add(1)
+	go c.watchdog()
+	return c, nil
+}
+
+func (c *connection) dial() error {
+	conn, err := amqp.Dial(c.url)
+	if err != nil {
+		return fmt.Errorf("dial rabbitmq: %w", err)
+	}
 	ch, err := conn.Channel()
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("failed to open channel: %w", err)
+		return fmt.Errorf("open channel: %w", err)
 	}
-
-	if err := ch.ExchangeDeclare(
-		exchangeName,
-		"direct",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	); err != nil {
+	if err := c.topology(ch); err != nil {
 		ch.Close()
 		conn.Close()
-		return nil, fmt.Errorf("failed to declare exchange: %w", err)
+		return err
 	}
 
-	return &RabbitPublisher{conn: conn, ch: ch}, nil
+	c.mu.Lock()
+	c.conn = conn
+	c.ch = ch
+	c.mu.Unlock()
+	return nil
+}
+
+// channel returns the currently-live channel or nil while disconnected.
+func (c *connection) channel() *amqp.Channel {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.ch == nil || c.ch.IsClosed() {
+		return nil
+	}
+	return c.ch
+}
+
+// watchdog listens for connection loss and reconnects with exponential backoff.
+func (c *connection) watchdog() {
+	defer c.wg.Done()
+	for {
+		c.mu.RLock()
+		conn := c.conn
+		c.mu.RUnlock()
+		if conn == nil {
+			return
+		}
+
+		closeCh := conn.NotifyClose(make(chan *amqp.Error, 1))
+
+		select {
+		case <-c.done:
+			return
+		case err, ok := <-closeCh:
+			if !ok || err == nil {
+				// Graceful close — either Close() ran or the broker sent a normal shutdown.
+				return
+			}
+			c.logger.Warn("rabbitmq connection lost", zap.Error(err))
+		}
+
+		delay := reconnectBaseDelay
+		for {
+			select {
+			case <-c.done:
+				return
+			case <-time.After(delay):
+			}
+			if err := c.dial(); err != nil {
+				c.logger.Warn("rabbitmq reconnect failed", zap.Duration("retry_in", delay), zap.Error(err))
+				delay *= 2
+				if delay > reconnectMaxDelay {
+					delay = reconnectMaxDelay
+				}
+				continue
+			}
+			c.logger.Info("rabbitmq reconnected")
+			break
+		}
+	}
+}
+
+func (c *connection) Close() error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
+	}
+	c.closed = true
+	close(c.done)
+	ch, conn := c.ch, c.conn
+	c.ch, c.conn = nil, nil
+	c.mu.Unlock()
+
+	var firstErr error
+	if ch != nil {
+		if err := ch.Close(); err != nil && !errors.Is(err, amqp.ErrClosed) {
+			firstErr = err
+		}
+	}
+	if conn != nil {
+		if err := conn.Close(); err != nil && !errors.Is(err, amqp.ErrClosed) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	c.wg.Wait()
+	return firstErr
+}
+
+// RabbitPublisher implements Publisher using RabbitMQ with auto-reconnect.
+type RabbitPublisher struct {
+	*connection
+}
+
+func NewRabbitPublisher(url string, logger *zap.Logger) (*RabbitPublisher, error) {
+	c, err := newConnection(url, declarePublisherTopology, logger)
+	if err != nil {
+		return nil, err
+	}
+	return &RabbitPublisher{connection: c}, nil
 }
 
 func (p *RabbitPublisher) PublishDelete(ctx context.Context, event AvatarDeleteEvent) error {
-	body, err := json.Marshal(event)
-	if err != nil {
-		return fmt.Errorf("failed to marshal delete event: %w", err)
-	}
-
-	return p.ch.PublishWithContext(ctx,
-		exchangeName,
-		deleteKey,
-		false,
-		false,
-		amqp.Publishing{
-			ContentType:  "application/json",
-			DeliveryMode: amqp.Persistent,
-			Body:         body,
-		},
-	)
+	return p.publish(ctx, deleteKey, event)
 }
 
 func (p *RabbitPublisher) PublishUpload(ctx context.Context, event AvatarUploadEvent) error {
+	return p.publish(ctx, uploadKey, event)
+}
+
+func (p *RabbitPublisher) publish(ctx context.Context, routingKey string, event any) error {
 	body, err := json.Marshal(event)
 	if err != nil {
-		return fmt.Errorf("failed to marshal upload event: %w", err)
+		return fmt.Errorf("marshal event: %w", err)
 	}
-
-	return p.ch.PublishWithContext(ctx,
-		exchangeName,
-		uploadKey,
-		false,
-		false,
-		amqp.Publishing{
-			ContentType:  "application/json",
-			DeliveryMode: amqp.Persistent,
-			Body:         body,
-		},
-	)
+	ch := p.channel()
+	if ch == nil {
+		return ErrBrokerUnavailable
+	}
+	return ch.PublishWithContext(ctx, exchangeName, routingKey, false, false, amqp.Publishing{
+		ContentType:  "application/json",
+		DeliveryMode: amqp.Persistent,
+		Body:         body,
+	})
 }
 
-func (p *RabbitPublisher) Close() error {
-	if err := p.ch.Close(); err != nil {
-		p.conn.Close()
-		return err
-	}
-	return p.conn.Close()
-}
-
-const (
-	deleteQueue = "avatar.delete.queue"
-	uploadQueue = "avatar.upload.queue"
-)
-
-// RabbitConsumer implements Consumer using RabbitMQ.
+// RabbitConsumer implements Consumer using RabbitMQ with auto-reconnect.
 type RabbitConsumer struct {
-	conn *amqp.Connection
-	ch   *amqp.Channel
+	*connection
 }
 
-// NewRabbitConsumer connects to RabbitMQ, declares the exchange and queue, binds the queue to the delete routing key, and returns a ready consumer
-func NewRabbitConsumer(url string) (*RabbitConsumer, error) {
-	conn, err := amqp.Dial(url)
+func NewRabbitConsumer(url string, logger *zap.Logger) (*RabbitConsumer, error) {
+	c, err := newConnection(url, declareConsumerTopology, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to rabbitmq: %w", err)
+		return nil, err
 	}
-
-	ch, err := conn.Channel()
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to open channel: %w", err)
-	}
-
-	if err := ch.ExchangeDeclare(
-		exchangeName,
-		"direct",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	); err != nil {
-		ch.Close()
-		conn.Close()
-		return nil, fmt.Errorf("failed to declare exchange: %w", err)
-	}
-
-	if _, err := ch.QueueDeclare(
-		deleteQueue,
-		true,
-		false,
-		false,
-		false,
-		nil,
-	); err != nil {
-		ch.Close()
-		conn.Close()
-		return nil, fmt.Errorf("failed to declare queue: %w", err)
-	}
-
-	if err := ch.QueueBind(deleteQueue, deleteKey, exchangeName, false, nil); err != nil {
-		ch.Close()
-		conn.Close()
-		return nil, fmt.Errorf("failed to bind queue: %w", err)
-	}
-
-	if _, err := ch.QueueDeclare(uploadQueue, true, false, false, false, nil); err != nil {
-		ch.Close()
-		conn.Close()
-		return nil, fmt.Errorf("failed to declare upload queue: %w", err)
-	}
-
-	if err := ch.QueueBind(uploadQueue, uploadKey, exchangeName, false, nil); err != nil {
-		ch.Close()
-		conn.Close()
-		return nil, fmt.Errorf("failed to bind upload queue: %w", err)
-	}
-
-	return &RabbitConsumer{conn: conn, ch: ch}, nil
+	return &RabbitConsumer{connection: c}, nil
 }
 
 func (c *RabbitConsumer) ConsumeDeletes(ctx context.Context) (<-chan DeleteDelivery, error) {
-	msgs, err := c.ch.ConsumeWithContext(ctx,
-		deleteQueue,
-		"",
-		false,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start consuming deletes: %w", err)
-	}
-
 	out := make(chan DeleteDelivery)
+	c.wg.Add(1)
 	go func() {
+		defer c.wg.Done()
 		defer close(out)
-		for msg := range msgs {
+		c.consumeLoop(ctx, deleteQueue, func(msg amqp.Delivery) bool {
 			var event AvatarDeleteEvent
 			if err := json.Unmarshal(msg.Body, &event); err != nil {
 				msg.Nack(false, false)
-				continue
+				return true
 			}
 			d := DeleteDelivery{
 				Event: event,
@@ -198,37 +262,28 @@ func (c *RabbitConsumer) ConsumeDeletes(ctx context.Context) (<-chan DeleteDeliv
 			}
 			select {
 			case out <- d:
+				return true
 			case <-ctx.Done():
-				return
+				return false
+			case <-c.done:
+				return false
 			}
-		}
+		})
 	}()
-
 	return out, nil
 }
 
 func (c *RabbitConsumer) ConsumeUploads(ctx context.Context) (<-chan UploadDelivery, error) {
-	msgs, err := c.ch.ConsumeWithContext(ctx,
-		uploadQueue,
-		"",
-		false,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start consuming uploads: %w", err)
-	}
-
 	out := make(chan UploadDelivery)
+	c.wg.Add(1)
 	go func() {
+		defer c.wg.Done()
 		defer close(out)
-		for msg := range msgs {
+		c.consumeLoop(ctx, uploadQueue, func(msg amqp.Delivery) bool {
 			var event AvatarUploadEvent
 			if err := json.Unmarshal(msg.Body, &event); err != nil {
 				msg.Nack(false, false)
-				continue
+				return true
 			}
 			d := UploadDelivery{
 				Event: event,
@@ -237,19 +292,66 @@ func (c *RabbitConsumer) ConsumeUploads(ctx context.Context) (<-chan UploadDeliv
 			}
 			select {
 			case out <- d:
+				return true
 			case <-ctx.Done():
-				return
+				return false
+			case <-c.done:
+				return false
 			}
-		}
+		})
 	}()
-
 	return out, nil
 }
 
-func (c *RabbitConsumer) Close() error {
-	if err := c.ch.Close(); err != nil {
-		c.conn.Close()
-		return err
+// consumeLoop keeps a subscription alive across reconnects. `handle` returns false when the caller's ctx is done and the loop should exit.
+func (c *RabbitConsumer) consumeLoop(ctx context.Context, queue string, handle func(amqp.Delivery) bool) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-c.done:
+			return
+		default:
+		}
+
+		ch := c.channel()
+		if ch == nil {
+			if !sleep(ctx, c.done, reconnectBaseDelay) {
+				return
+			}
+			continue
+		}
+
+		msgs, err := ch.ConsumeWithContext(ctx, queue, "", false, false, false, false, nil)
+		if err != nil {
+			c.logger.Warn("failed to start consuming", zap.String("queue", queue), zap.Error(err))
+			if !sleep(ctx, c.done, reconnectBaseDelay) {
+				return
+			}
+			continue
+		}
+
+		for msg := range msgs {
+			if !handle(msg) {
+				return
+			}
+		}
+		// msgs closed: either ctx cancellation, Close(), or connection loss.
+		// The outer loop re-checks ctx/done and picks up the new channel once the watchdog has reconnected.
 	}
-	return c.conn.Close()
+}
+
+// sleep waits for `d`, returning false if ctx or done fires first.
+func sleep(ctx context.Context, done <-chan struct{}, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-done:
+		return false
+	}
 }
