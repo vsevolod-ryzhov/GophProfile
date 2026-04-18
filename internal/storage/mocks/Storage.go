@@ -74,6 +74,36 @@ func (_m *Storage) GetAvatarByID(ctx context.Context, avatarID string) (*model.A
 	return r0, r1
 }
 
+// ListAvatarsByUserID provides a mock function with given fields: ctx, userID
+func (_m *Storage) ListAvatarsByUserID(ctx context.Context, userID string) ([]model.Avatar, error) {
+	ret := _m.Called(ctx, userID)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ListAvatarsByUserID")
+	}
+
+	var r0 []model.Avatar
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string) ([]model.Avatar, error)); ok {
+		return rf(ctx, userID)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string) []model.Avatar); ok {
+		r0 = rf(ctx, userID)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]model.Avatar)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string) error); ok {
+		r1 = rf(ctx, userID)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // Ping provides a mock function with given fields: ctx
 func (_m *Storage) Ping(ctx context.Context) error {
 	ret := _m.Called(ctx)

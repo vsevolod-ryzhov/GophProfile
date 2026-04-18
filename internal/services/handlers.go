@@ -162,6 +162,61 @@ func (h *Handler) AvatarInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) AvatarsListByUser(w http.ResponseWriter, r *http.Request) {
+	authUserID, usrErr := extractUserID(r)
+	if usrErr != nil {
+		writeJSONError(w, http.StatusBadRequest, usrErr, "")
+		return
+	}
+
+	urlUserID := chi.URLParam(r, "user_id")
+	if urlUserID == "" {
+		writeJSONError(w, http.StatusBadRequest, errs.UserIDHeaderNotFound, "")
+		return
+	}
+	if urlUserID != authUserID {
+		writeJSONError(w, http.StatusForbidden, errs.Forbidden, "")
+		return
+	}
+
+	avatars, err := h.storage.ListAvatarsByUserID(r.Context(), urlUserID)
+	if err != nil {
+		h.logger.Error("failed to list avatars",
+			zap.String("user_id", urlUserID),
+			zap.Error(err),
+		)
+		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
+		return
+	}
+
+	items := make([]map[string]interface{}, 0, len(avatars))
+	for _, a := range avatars {
+		thumbnails := make([]map[string]string, 0, len(a.ThumbnailS3Keys))
+		for _, key := range a.ThumbnailS3Keys {
+			thumbnails = append(thumbnails, map[string]string{"s3_key": key})
+		}
+		items = append(items, map[string]interface{}{
+			"id":                a.ID,
+			"user_id":           a.UserID,
+			"file_name":         a.FileName,
+			"mime_type":         a.MimeType,
+			"size_bytes":        a.SizeBytes,
+			"s3_key":            a.S3Key,
+			"thumbnails":        thumbnails,
+			"processing_status": a.ProcessingStatus,
+			"created_at":        a.CreatedAt,
+			"updated_at":        a.UpdatedAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"avatars": items,
+		"count":   len(items),
+	})
+}
+
 func (h *Handler) AvatarUpload(w http.ResponseWriter, r *http.Request) {
 	userID, usrErr := extractUserID(r)
 	if usrErr != nil {

@@ -86,6 +86,7 @@ func (s *Server) routes(h *Handler) *chi.Mux {
 	r.Post("/api/v1/avatars", h.AvatarUpload)
 	r.Delete("/api/v1/avatars/{avatar_id}", h.AvatarDelete)
 	r.Get("/api/v1/avatars/{avatar_id}", h.AvatarInfo)
+	r.Get("/api/v1/users/{user_id}/avatars", h.AvatarsListByUser)
 
 	fileServer := http.FileServer(http.Dir("web/static"))
 	r.Handle("/*", fileServer)

@@ -19,12 +19,13 @@ import (
 
 // Storage defines the interface for persistent data operations.
 //
-//go:generate mockery
+//go:generate mockery --name=Storage --output=mocks --outpkg=mocks
 type Storage interface {
 	Ping(ctx context.Context) error
 	CreateNewAvatarRecord(ctx context.Context, userID, fileName, mimeType string, size int64) (*model.Avatar, error)
 	UpdateAvatarS3Key(ctx context.Context, avatarID string, s3Key string) error
 	GetAvatarByID(ctx context.Context, avatarID string) (*model.Avatar, error)
+	ListAvatarsByUserID(ctx context.Context, userID string) ([]model.Avatar, error)
 	SoftDeleteAvatar(ctx context.Context, avatarID string) error
 	UpdateThumbnailKeys(ctx context.Context, avatarID string, keys []string) error
 	UpdateProcessingStatus(ctx context.Context, avatarID string, status string) error
@@ -119,6 +120,42 @@ func (s *PostgresStorage) GetAvatarByID(ctx context.Context, avatarID string) (*
 		}
 	}
 	return &avatar, nil
+}
+
+func (s *PostgresStorage) ListAvatarsByUserID(ctx context.Context, userID string) ([]model.Avatar, error) {
+	rows, err := sq.Select("id", "user_id", "file_name", "mime_type", "size_bytes", "COALESCE(s3_key, '')",
+		"upload_status", "processing_status", "COALESCE(thumbnail_s3_keys, '[]')", "created_at", "updated_at").
+		From("avatars").
+		Where(sq.Eq{"user_id": userID}).
+		Where("deleted_at IS NULL").
+		OrderBy("created_at DESC").
+		PlaceholderFormat(sq.Dollar).
+		RunWith(s.db).
+		QueryContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var avatars []model.Avatar
+	for rows.Next() {
+		var a model.Avatar
+		var thumbnailsJSON sql.NullString
+		if err := rows.Scan(&a.ID, &a.UserID, &a.FileName, &a.MimeType, &a.SizeBytes, &a.S3Key,
+			&a.UploadStatus, &a.ProcessingStatus, &thumbnailsJSON, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if thumbnailsJSON.Valid && thumbnailsJSON.String != "" {
+			if err := json.Unmarshal([]byte(thumbnailsJSON.String), &a.ThumbnailS3Keys); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal thumbnail keys: %w", err)
+			}
+		}
+		avatars = append(avatars, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return avatars, nil
 }
 
 func (s *PostgresStorage) SoftDeleteAvatar(ctx context.Context, avatarID string) error {
