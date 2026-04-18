@@ -43,17 +43,11 @@ func NewPostgresStorage(connectionString string) (*PostgresStorage, error) {
 	}
 
 	if errPing := db.Ping(); errPing != nil {
+		db.Close()
 		return nil, errPing
 	}
 
-	migrationDB, err := sql.Open("pgx", connectionString)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to open migration database: %w", err)
-	}
-	defer migrationDB.Close()
-
-	if errMigrations := applyMigrations(migrationDB); errMigrations != nil {
+	if errMigrations := applyMigrations(db); errMigrations != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to apply migrations: %w", errMigrations)
 	}
@@ -75,7 +69,6 @@ func applyMigrations(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("failed to create migrate instance: %w", err)
 	}
-	defer m.Close()
 
 	if errUp := m.Up(); errUp != nil && !errors.Is(errUp, migrate.ErrNoChange) {
 		return fmt.Errorf("failed to apply migrations: %w", errUp)
