@@ -280,7 +280,11 @@ func (h *Handler) AvatarDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s3Keys := []string{avatar.S3Key}
+	s3Keys := make([]string, 0, 1+len(avatar.ThumbnailS3Keys))
+	if avatar.S3Key != "" {
+		s3Keys = append(s3Keys, avatar.S3Key)
+	}
+	s3Keys = append(s3Keys, avatar.ThumbnailS3Keys...)
 	if err := h.publisher.PublishDelete(r.Context(), broker.AvatarDeleteEvent{
 		AvatarID: avatarID,
 		S3Keys:   s3Keys,
