@@ -96,7 +96,7 @@ func run(ctx context.Context, logger *zap.Logger) error {
 	}
 }
 
-func handleDelete(ctx context.Context, logger *zap.Logger, fileStore *filestorage.MinioStorage, del broker.DeleteDelivery) {
+func handleDelete(ctx context.Context, logger *zap.Logger, fileStore filestorage.FileStorage, del broker.DeleteDelivery) {
 	log := logger.With(zap.String("avatar_id", del.Event.AvatarID))
 	log.Info("received delete event", zap.Int("keys", len(del.Event.S3Keys)))
 
@@ -117,7 +117,7 @@ func handleDelete(ctx context.Context, logger *zap.Logger, fileStore *filestorag
 }
 
 // failPermanent marks the avatar as failed and Acks the message so Rabbit drops it — use when the error is not worth retrying (bad image, missing object, etc).
-func failPermanent(ctx context.Context, log *zap.Logger, repo *storage.PostgresStorage, upl broker.UploadDelivery) {
+func failPermanent(ctx context.Context, log *zap.Logger, repo storage.Storage, upl broker.UploadDelivery) {
 	if err := repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed"); err != nil {
 		log.Error("failed to set failed status", zap.Error(err))
 	}
@@ -127,7 +127,7 @@ func failPermanent(ctx context.Context, log *zap.Logger, repo *storage.PostgresS
 }
 
 // failTransient marks the avatar as failed and Nacks so the message is requeued — use for errors that may succeed on retry (broker/storage hiccups).
-func failTransient(ctx context.Context, log *zap.Logger, repo *storage.PostgresStorage, upl broker.UploadDelivery) {
+func failTransient(ctx context.Context, log *zap.Logger, repo storage.Storage, upl broker.UploadDelivery) {
 	if err := repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed"); err != nil {
 		log.Error("failed to set failed status", zap.Error(err))
 	}
@@ -136,7 +136,7 @@ func failTransient(ctx context.Context, log *zap.Logger, repo *storage.PostgresS
 	}
 }
 
-func handleUpload(ctx context.Context, logger *zap.Logger, fileStore *filestorage.MinioStorage, repo *storage.PostgresStorage, upl broker.UploadDelivery) {
+func handleUpload(ctx context.Context, logger *zap.Logger, fileStore filestorage.FileStorage, repo storage.Storage, upl broker.UploadDelivery) {
 	log := logger.With(
 		zap.String("avatar_id", upl.Event.AvatarID),
 		zap.String("user_id", upl.Event.UserID),
