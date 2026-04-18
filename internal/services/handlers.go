@@ -169,7 +169,7 @@ func (h *Handler) AvatarUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upload, uploadErr := readUploadedFile(r)
+	upload, uploadErr := readUploadedFile(w, r)
 	if uploadErr != nil {
 		h.logger.Warn("avatar upload rejected",
 			zap.String("user_id", userID),
@@ -298,8 +298,8 @@ func (h *Handler) AvatarDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func readUploadedFile(r *http.Request) (*uploadedFile, error) {
-	r.Body = http.MaxBytesReader(nil, r.Body, maxUploadBytes)
+func readUploadedFile(w http.ResponseWriter, r *http.Request) (*uploadedFile, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 
 	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
 		if errors.Is(err, http.ErrNotMultipart) || errors.Is(err, http.ErrMissingBoundary) {

@@ -14,9 +14,7 @@ import (
 	"go.uber.org/zap"
 )
 
-var logger *zap.Logger
-
-func Run(ctx context.Context) error {
+func Run(ctx context.Context, logger *zap.Logger) error {
 	config.ParseFlags()
 
 	repo, storageErr := storage.NewPostgresStorage(config.Options.DatabaseDSN)
@@ -57,7 +55,6 @@ func Run(ctx context.Context) error {
 
 func main() {
 	log, err := zap.NewDevelopment()
-	logger = log
 
 	if err != nil {
 		panic(err)
@@ -67,7 +64,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if errRun := Run(ctx); errRun != nil {
-		logger.Fatal(errRun.Error())
+	if errRun := Run(ctx, log); errRun != nil {
+		log.Fatal(errRun.Error())
 	}
 }
