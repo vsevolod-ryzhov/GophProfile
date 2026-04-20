@@ -1,0 +1,11 @@
+.git
+.idea
+.vscode
+.DS_Store
+*.md
+coverage.out
+crt
+test-data
+web
+.planning
+.claude
