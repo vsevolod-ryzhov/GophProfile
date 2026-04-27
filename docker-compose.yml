@@ -80,7 +80,7 @@ services:
       RABBIT_URL: "amqp://guest:guest@rabbitmq:5672/"
       OTEL_SERVICE_NAME: "GophProfile"
       OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=development"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
       OTEL_EXPORTER_OTLP_INSECURE: "true"
     volumes:
       - ./crt:/certs:ro
@@ -95,13 +95,6 @@ services:
       args:
         CMD: worker
     container_name: gophProfile_worker
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
     environment:
       DATABASE_DSN: "host=postgres user=postgres_user password=postgres_password dbname=postgres_db sslmode=disable"
       MINIO_ENDPOINT: "minio:9000"
@@ -109,6 +102,19 @@ services:
       MINIO_SECRET_KEY: "minio_password"
       MINIO_BUCKET: "goph-profile"
       RABBIT_URL: "amqp://guest:guest@rabbitmq:5672/"
+      OTEL_SERVICE_NAME: "GophProfile-worker"
+      OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=development"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
     restart: unless-stopped
 
   otel-collector:
