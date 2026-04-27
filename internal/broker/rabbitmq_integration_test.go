@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/rabbitmq"
-	"go.uber.org/zap"
+	"log/slog"
 )
 
 var testRabbitURL string
@@ -45,11 +45,11 @@ func TestMain(m *testing.M) {
 
 func newPubConsumer(t *testing.T) (*RabbitPublisher, *RabbitConsumer) {
 	t.Helper()
-	consumer, err := NewRabbitConsumer(testRabbitURL, zap.NewNop())
+	consumer, err := NewRabbitConsumer(testRabbitURL, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	t.Cleanup(func() { consumer.Close() })
 
-	pub, err := NewRabbitPublisher(testRabbitURL, zap.NewNop())
+	pub, err := NewRabbitPublisher(testRabbitURL, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	t.Cleanup(func() { pub.Close() })
 
@@ -195,11 +195,11 @@ func TestMultipleMessages(t *testing.T) {
 }
 
 func TestNewRabbitPublisher_BadURL(t *testing.T) {
-	_, err := NewRabbitPublisher("amqp://bad:bad@localhost:1/", zap.NewNop())
+	_, err := NewRabbitPublisher("amqp://bad:bad@localhost:1/", slog.New(slog.DiscardHandler))
 	assert.Error(t, err)
 }
 
 func TestNewRabbitConsumer_BadURL(t *testing.T) {
-	_, err := NewRabbitConsumer("amqp://bad:bad@localhost:1/", zap.NewNop())
+	_, err := NewRabbitConsumer("amqp://bad:bad@localhost:1/", slog.New(slog.DiscardHandler))
 	assert.Error(t, err)
 }

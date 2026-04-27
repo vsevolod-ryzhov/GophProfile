@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	"GophProfile/internal/storage"
 
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 type ServerConfig struct {
@@ -24,10 +24,10 @@ type ServerConfig struct {
 type Server struct {
 	httpServer *http.Server
 	config     *ServerConfig
-	logger     *zap.Logger
+	logger     *slog.Logger
 }
 
-func NewServer(config *ServerConfig, logger *zap.Logger) *Server {
+func NewServer(config *ServerConfig, logger *slog.Logger) *Server {
 	return &Server{
 		config: config,
 		logger: logger,
@@ -47,9 +47,9 @@ func (s *Server) Start(ctx context.Context, store storage.Storage, fileStore fil
 	errCh := make(chan error, 1)
 	go func() {
 		useTLS := s.config.CertFile != "" && s.config.KeyFile != ""
-		s.logger.Info("Starting HTTP server",
-			zap.String("addr", s.config.AppPort),
-			zap.Bool("tls", useTLS),
+		s.logger.InfoContext(ctx, "starting http server",
+			"addr", s.config.AppPort,
+			"tls", useTLS,
 		)
 
 		var err error
@@ -66,12 +66,12 @@ func (s *Server) Start(ctx context.Context, store storage.Storage, fileStore fil
 
 	select {
 	case <-ctx.Done():
-		s.logger.Info("Shutting down server...")
+		s.logger.InfoContext(ctx, "shutting down server")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-			s.logger.Error("HTTP server shutdown failed", zap.Error(err))
+			s.logger.ErrorContext(ctx, "HTTP server shutdown failed", "err", err)
 			return fmt.Errorf("HTTP shutdown error: %w", err)
 		}
 		return nil

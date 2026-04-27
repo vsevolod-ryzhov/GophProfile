@@ -20,7 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"go.uber.org/zap"
+	"log/slog"
 )
 
 func newTestHandler(t *testing.T) (*Handler, *storagemocks.Storage, *fsmocks.FileStorage, *brokermocks.Publisher) {
@@ -28,7 +28,7 @@ func newTestHandler(t *testing.T) (*Handler, *storagemocks.Storage, *fsmocks.Fil
 	store := storagemocks.NewStorage(t)
 	fs := fsmocks.NewFileStorage(t)
 	pub := brokermocks.NewPublisher(t)
-	logger := zap.NewNop()
+	logger := slog.New(slog.DiscardHandler)
 	h := NewHandler(store, fs, pub, logger)
 	return h, store, fs, pub
 }
@@ -305,7 +305,7 @@ func TestRoutes(t *testing.T) {
 	h, store, _, _ := newTestHandler(t)
 	store.On("Ping", mock.Anything).Return(nil)
 
-	srv := NewServer(&ServerConfig{AppPort: ":0"}, zap.NewNop())
+	srv := NewServer(&ServerConfig{AppPort: ":0"}, slog.New(slog.DiscardHandler))
 	r := srv.routes(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
