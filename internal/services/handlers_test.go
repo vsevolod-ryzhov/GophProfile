@@ -14,6 +14,7 @@ import (
 	brokermocks "GophProfile/internal/broker/mocks"
 	fsmocks "GophProfile/internal/filestorage/mocks"
 	"GophProfile/internal/model"
+	"GophProfile/internal/observability"
 	storagemocks "GophProfile/internal/storage/mocks"
 
 	"github.com/go-chi/chi/v5"
@@ -29,7 +30,11 @@ func newTestHandler(t *testing.T) (*Handler, *storagemocks.Storage, *fsmocks.Fil
 	fs := fsmocks.NewFileStorage(t)
 	pub := brokermocks.NewPublisher(t)
 	logger := slog.New(slog.DiscardHandler)
-	h := NewHandler(store, fs, pub, logger)
+	metrics, err := observability.NewAvatarMetrics()
+	if err != nil {
+		t.Fatalf("init metrics: %v", err)
+	}
+	h := NewHandler(store, fs, pub, logger, metrics)
 	return h, store, fs, pub
 }
 
@@ -305,7 +310,8 @@ func TestRoutes(t *testing.T) {
 	h, store, _, _ := newTestHandler(t)
 	store.On("Ping", mock.Anything).Return(nil)
 
-	srv := NewServer(&ServerConfig{AppPort: ":0"}, slog.New(slog.DiscardHandler))
+	metrics, _ := observability.NewAvatarMetrics()
+	srv := NewServer(&ServerConfig{AppPort: ":0"}, slog.New(slog.DiscardHandler), metrics)
 	r := srv.routes(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)

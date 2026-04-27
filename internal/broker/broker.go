@@ -25,17 +25,21 @@ type Publisher interface {
 }
 
 // DeleteDelivery wraps a delete event with Ack/Nack control.
+// Context carries the trace context extracted from the incoming message headers.
 type DeleteDelivery struct {
-	Event AvatarDeleteEvent
-	Ack   func() error
-	Nack  func() error
+	Context context.Context
+	Event   AvatarDeleteEvent
+	Ack     func() error
+	Nack    func() error
 }
 
 // UploadDelivery wraps an upload event with Ack/Nack control.
+// Context carries the trace context extracted from the incoming message headers.
 type UploadDelivery struct {
-	Event AvatarUploadEvent
-	Ack   func() error
-	Nack  func() error
+	Context context.Context
+	Event   AvatarUploadEvent
+	Ack     func() error
+	Nack    func() error
 }
 
 // Consumer receives events from a message broker.

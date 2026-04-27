@@ -118,10 +118,11 @@ services:
     restart: unless-stopped
 
   otel-collector:
-    image: otel/opentelemetry-collector:0.143.0
+    image: otel/opentelemetry-collector-contrib:0.143.0
     container_name: otel-collector
     ports:
       - "4317:4317"
+      - "8889:8889"
       - "13133:13133"
     command:
       - "--config=/etc/otel-collector-config.yml"
@@ -129,6 +130,18 @@ services:
       - ./otel-collector-config.yml:/etc/otel-collector-config.yml:ro
     depends_on:
       - loki
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.6.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - otel-collector
     restart: unless-stopped
 
   loki:
@@ -153,6 +166,7 @@ services:
       - grafana-data:/var/lib/grafana
     depends_on:
       - loki
+      - prometheus
     restart: unless-stopped
 
 
@@ -161,3 +175,4 @@ volumes:
   rabbitmq_data:
   loki-data:
   grafana-data:
+  prometheus-data:

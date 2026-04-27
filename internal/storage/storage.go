@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/XSAM/otelsql"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/golang-migrate/migrate/v4/source/github"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 
 	sq "github.com/Masterminds/squirrel"
 )
@@ -38,9 +40,16 @@ type PostgresStorage struct {
 
 // NewPostgresStorage connects to the database, applies migrations, and returns a new PostgresStorage.
 func NewPostgresStorage(connectionString string) (*PostgresStorage, error) {
-	db, err := sql.Open("pgx", connectionString)
+	db, err := otelsql.Open("pgx", connectionString,
+		otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
+		otelsql.WithSpanOptions(otelsql.SpanOptions{OmitConnResetSession: true}),
+	)
 	if err != nil {
 		return nil, err
+	}
+	if _, err := otelsql.RegisterDBStatsMetrics(db, otelsql.WithAttributes(semconv.DBSystemPostgreSQL)); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("register db stats metrics: %w", err)
 	}
 
 	if errPing := db.Ping(); errPing != nil {

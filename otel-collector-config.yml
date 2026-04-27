@@ -21,6 +21,10 @@ exporters:
     compression: "gzip"
     tls:
       insecure: true
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
   debug:
     verbosity: basic
 
@@ -36,3 +40,7 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

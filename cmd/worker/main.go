@@ -4,93 +4,26 @@ import (
 	"GophProfile/internal/broker"
 	"GophProfile/internal/config"
 	"GophProfile/internal/filestorage"
+	"GophProfile/internal/observability"
 	"GophProfile/internal/storage"
 	"bytes"
 	"context"
 	"fmt"
 	"image/jpeg"
-	"log"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/disintegration/imaging"
-	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
-	sdklog "go.opentelemetry.io/otel/sdk/log"
-	"go.opentelemetry.io/otel/sdk/resource"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const serviceName = "GophProfile-worker"
-
-func initLogger(ctx context.Context) (*slog.Logger, func()) {
-	exporter, err := otlploggrpc.New(ctx)
-	if err != nil {
-		log.Fatalf("failed to create OTLP log exporter: %v", err)
-	}
-
-	res, err := resource.New(ctx,
-		resource.WithFromEnv(),
-		resource.WithTelemetrySDK(),
-	)
-	if err != nil {
-		log.Fatalf("failed to create resource: %v", err)
-	}
-
-	provider := sdklog.NewLoggerProvider(
-		sdklog.WithResource(res),
-		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
-	)
-
-	otelHandler := otelslog.NewHandler(serviceName, otelslog.WithLoggerProvider(provider))
-	stdoutHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
-	logger := slog.New(fanout{otelHandler, stdoutHandler})
-	slog.SetDefault(logger)
-
-	return logger, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := provider.Shutdown(ctx); err != nil {
-			otel.Handle(err)
-		}
-	}
-}
-
-type fanout []slog.Handler
-
-func (f fanout) Enabled(ctx context.Context, l slog.Level) bool {
-	for _, h := range f {
-		if h.Enabled(ctx, l) {
-			return true
-		}
-	}
-	return false
-}
-func (f fanout) Handle(ctx context.Context, r slog.Record) error {
-	for _, h := range f {
-		if err := h.Handle(ctx, r.Clone()); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-func (f fanout) WithAttrs(attrs []slog.Attr) slog.Handler {
-	out := make(fanout, len(f))
-	for i, h := range f {
-		out[i] = h.WithAttrs(attrs)
-	}
-	return out
-}
-func (f fanout) WithGroup(name string) slog.Handler {
-	out := make(fanout, len(f))
-	for i, h := range f {
-		out[i] = h.WithGroup(name)
-	}
-	return out
-}
 
 var thumbnailSizes = []struct {
 	Name   string
@@ -107,16 +40,26 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	logger, shutdown := initLogger(ctx)
+	logger, shutdown, err := observability.Init(ctx, serviceName)
+	if err != nil {
+		slog.ErrorContext(ctx, "init observability", "err", err)
+		os.Exit(1)
+	}
 	defer shutdown()
 
-	if err := run(ctx, logger); err != nil {
+	metrics, err := observability.NewAvatarMetrics()
+	if err != nil {
+		logger.ErrorContext(ctx, "init metrics", "err", err)
+		os.Exit(1)
+	}
+
+	if err := run(ctx, logger, metrics); err != nil {
 		logger.ErrorContext(ctx, "worker exited with error", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, logger *slog.Logger) error {
+func run(ctx context.Context, logger *slog.Logger, metrics *observability.Avatars) error {
 	fileStore, err := filestorage.NewMinioStorage(
 		config.Options.MinioEndpoint,
 		config.Options.MinioAccessKey,
@@ -149,7 +92,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("failed to start consuming uploads: %w", err)
 	}
 
-	logger.Info("worker started, waiting for events")
+	logger.InfoContext(ctx, "worker started, waiting for events")
 
 	for {
 		select {
@@ -157,97 +100,117 @@ func run(ctx context.Context, logger *slog.Logger) error {
 			if !ok {
 				return nil
 			}
-			handleDelete(ctx, logger, fileStore, del)
+			handleDelete(logger, fileStore, del)
 		case upl, ok := <-uploads:
 			if !ok {
 				return nil
 			}
-			handleUpload(ctx, logger, fileStore, repo, upl)
+			handleUpload(logger, fileStore, repo, metrics, upl)
 		case <-ctx.Done():
-			logger.Info("worker stopped")
+			logger.InfoContext(ctx, "worker stopped")
 			return nil
 		}
 	}
 }
 
-func handleDelete(ctx context.Context, logger *slog.Logger, fileStore filestorage.FileStorage, del broker.DeleteDelivery) {
+func processSpan(ctx context.Context, name string) (context.Context, trace.Span) {
+	return otel.Tracer("worker").Start(ctx, name, trace.WithSpanKind(trace.SpanKindConsumer))
+}
+
+func handleDelete(logger *slog.Logger, fileStore filestorage.FileStorage, del broker.DeleteDelivery) {
+	ctx, span := processSpan(del.Context, "process_delete")
+	defer span.End()
+	span.SetAttributes(attribute.String("avatar.id", del.Event.AvatarID))
+
 	log := logger.With("avatar_id", del.Event.AvatarID)
-	log.Info("received delete event", "keys", len(del.Event.S3Keys))
+	log.InfoContext(ctx, "received delete event", "keys", len(del.Event.S3Keys))
 
 	for _, key := range del.Event.S3Keys {
 		if err := fileStore.Delete(ctx, key); err != nil {
-			log.Error("failed to delete S3 object", "key", key, "err", err)
+			log.ErrorContext(ctx, "failed to delete S3 object", "key", key, "err", err)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			if err := del.Nack(); err != nil {
-				log.Error("failed to nack message", "err", err)
+				log.ErrorContext(ctx, "failed to nack message", "err", err)
 			}
 			return
 		}
-		log.Info("deleted S3 object", "key", key)
+		log.InfoContext(ctx, "deleted S3 object", "key", key)
 	}
 
 	if err := del.Ack(); err != nil {
-		log.Error("failed to ack message", "err", err)
+		log.ErrorContext(ctx, "failed to ack message", "err", err)
 	}
 }
 
-// failPermanent marks the avatar as failed and Acks the message so Rabbit drops it — use when the error is not worth retrying (bad image, missing object, etc).
+// failPermanent marks the avatar as failed and Acks the message so Rabbit drops it.
 func failPermanent(ctx context.Context, log *slog.Logger, repo storage.Storage, upl broker.UploadDelivery) {
 	if err := repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed"); err != nil {
-		log.Error("failed to set failed status", "err", err)
+		log.ErrorContext(ctx, "failed to set failed status", "err", err)
 	}
 	if err := upl.Ack(); err != nil {
-		log.Error("failed to ack message", "err", err)
+		log.ErrorContext(ctx, "failed to ack message", "err", err)
 	}
 }
 
-// failTransient marks the avatar as failed and Nacks so the message is requeued — use for errors that may succeed on retry (broker/storage hiccups).
+// failTransient marks the avatar as failed and Nacks so the message is requeued.
 func failTransient(ctx context.Context, log *slog.Logger, repo storage.Storage, upl broker.UploadDelivery) {
 	if err := repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "failed"); err != nil {
-		log.Error("failed to set failed status", "err", err)
+		log.ErrorContext(ctx, "failed to set failed status", "err", err)
 	}
 	if err := upl.Nack(); err != nil {
-		log.Error("failed to nack message", "err", err)
+		log.ErrorContext(ctx, "failed to nack message", "err", err)
 	}
 }
 
-func handleUpload(ctx context.Context, logger *slog.Logger, fileStore filestorage.FileStorage, repo storage.Storage, upl broker.UploadDelivery) {
+func handleUpload(logger *slog.Logger, fileStore filestorage.FileStorage, repo storage.Storage, metrics *observability.Avatars, upl broker.UploadDelivery) {
+	ctx, span := processSpan(upl.Context, "process_upload")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("avatar.id", upl.Event.AvatarID),
+		attribute.String("user.id", upl.Event.UserID),
+	)
+
 	log := logger.With(
 		"avatar_id", upl.Event.AvatarID,
 		"user_id", upl.Event.UserID,
 	)
-	log.Info("received upload event, generating thumbnails")
+	log.InfoContext(ctx, "received upload event, generating thumbnails")
 
 	avatar, err := repo.GetAvatarByID(ctx, upl.Event.AvatarID)
 	if err != nil {
-		log.Error("failed to load avatar", "err", err)
+		log.ErrorContext(ctx, "failed to load avatar", "err", err)
+		span.RecordError(err)
 		upl.Nack()
 		return
 	}
 	if avatar.ProcessingStatus == "completed" {
-		log.Info("skipping already-processed upload")
+		log.InfoContext(ctx, "skipping already-processed upload")
 		if err := upl.Ack(); err != nil {
-			log.Error("failed to ack message", "err", err)
+			log.ErrorContext(ctx, "failed to ack message", "err", err)
 		}
 		return
 	}
 
 	if err := repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "processing"); err != nil {
-		log.Error("failed to set processing status", "err", err)
+		log.ErrorContext(ctx, "failed to set processing status", "err", err)
 		upl.Nack()
 		return
 	}
 
 	data, err := fileStore.Download(ctx, upl.Event.S3Key)
 	if err != nil {
-		log.Error("failed to download original image", "err", err)
-		failPermanent(ctx, log, repo, upl) // object missing, retrying won't help
+		log.ErrorContext(ctx, "failed to download original image", "err", err)
+		span.RecordError(err)
+		failPermanent(ctx, log, repo, upl)
 		return
 	}
 
 	src, err := imaging.Decode(bytes.NewReader(data))
 	if err != nil {
-		log.Error("failed to decode image", "err", err)
-		failPermanent(ctx, log, repo, upl) // bad image data, retrying won't help
+		log.ErrorContext(ctx, "failed to decode image", "err", err)
+		span.RecordError(err)
+		failPermanent(ctx, log, repo, upl)
 		return
 	}
 
@@ -257,35 +220,45 @@ func handleUpload(ctx context.Context, logger *slog.Logger, fileStore filestorag
 
 		var buf bytes.Buffer
 		if err := jpeg.Encode(&buf, thumb, &jpeg.Options{Quality: 85}); err != nil {
-			log.Error("failed to encode thumbnail", "size", size.Name, "err", err)
-			failPermanent(ctx, log, repo, upl) // encode won't succeed on retry
+			log.ErrorContext(ctx, "failed to encode thumbnail", "size", size.Name, "err", err)
+			span.RecordError(err)
+			failPermanent(ctx, log, repo, upl)
 			return
 		}
 
 		key := fmt.Sprintf("thumbnails/%s/%s.jpg", upl.Event.AvatarID, size.Name)
 		if err := fileStore.Upload(ctx, key, buf.Bytes()); err != nil {
-			log.Error("failed to upload thumbnail", "key", key, "err", err)
+			log.ErrorContext(ctx, "failed to upload thumbnail", "key", key, "err", err)
+			span.RecordError(err)
 			failTransient(ctx, log, repo, upl)
 			return
 		}
 		thumbKeys = append(thumbKeys, key)
-		log.Info("uploaded thumbnail", "key", key)
+		metrics.ThumbnailsTotal.Add(ctx, 1, attributeFor("size", size.Name))
+		metrics.StorageBytes.Add(ctx, int64(buf.Len()))
+		log.InfoContext(ctx, "uploaded thumbnail", "key", key)
 	}
 
 	if err := repo.UpdateThumbnailKeys(ctx, upl.Event.AvatarID, thumbKeys); err != nil {
-		log.Error("failed to save thumbnail keys", "err", err)
+		log.ErrorContext(ctx, "failed to save thumbnail keys", "err", err)
+		span.RecordError(err)
 		failTransient(ctx, log, repo, upl)
 		return
 	}
 
 	if err := repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "completed"); err != nil {
-		log.Error("failed to set completed status", "err", err)
+		log.ErrorContext(ctx, "failed to set completed status", "err", err)
+		span.RecordError(err)
 		upl.Nack()
 		return
 	}
 
 	if err := upl.Ack(); err != nil {
-		log.Error("failed to ack message", "err", err)
+		log.ErrorContext(ctx, "failed to ack message", "err", err)
 	}
-	log.Info("thumbnails generated successfully")
+	log.InfoContext(ctx, "thumbnails generated successfully")
+}
+
+func attributeFor(k, v string) metric.MeasurementOption {
+	return metric.WithAttributes(attribute.String(k, v))
 }

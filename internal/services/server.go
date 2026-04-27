@@ -10,6 +10,7 @@ import (
 
 	"GophProfile/internal/broker"
 	"GophProfile/internal/filestorage"
+	"GophProfile/internal/observability"
 	"GophProfile/internal/storage"
 
 	"github.com/go-chi/chi/v5"
@@ -26,17 +27,19 @@ type Server struct {
 	httpServer *http.Server
 	config     *ServerConfig
 	logger     *slog.Logger
+	metrics    *observability.Avatars
 }
 
-func NewServer(config *ServerConfig, logger *slog.Logger) *Server {
+func NewServer(config *ServerConfig, logger *slog.Logger, metrics *observability.Avatars) *Server {
 	return &Server{
-		config: config,
-		logger: logger,
+		config:  config,
+		logger:  logger,
+		metrics: metrics,
 	}
 }
 
 func (s *Server) Start(ctx context.Context, store storage.Storage, fileStore filestorage.FileStorage, pub broker.Publisher) error {
-	handler := NewHandler(store, fileStore, pub, s.logger)
+	handler := NewHandler(store, fileStore, pub, s.logger, s.metrics)
 
 	s.httpServer = &http.Server{
 		Addr:         s.config.AppPort,
