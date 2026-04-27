@@ -13,6 +13,7 @@ import (
 	"GophProfile/internal/storage"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type ServerConfig struct {
@@ -39,7 +40,7 @@ func (s *Server) Start(ctx context.Context, store storage.Storage, fileStore fil
 
 	s.httpServer = &http.Server{
 		Addr:         s.config.AppPort,
-		Handler:      s.routes(handler),
+		Handler:      otelhttp.NewHandler(s.routes(handler), "http.server"),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}

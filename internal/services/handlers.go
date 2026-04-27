@@ -89,6 +89,8 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 
+	h.logger.InfoContext(ctx, "Health check")
+
 	resp := healthResponse{
 		Status:     "ok",
 		Components: map[string]string{},

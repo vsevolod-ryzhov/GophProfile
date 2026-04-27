@@ -18,8 +18,12 @@ import (
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const serviceName = "GophProfile"
@@ -44,7 +48,7 @@ func InitLoggerProvider(ctx context.Context) (*slog.Logger, func()) {
 	)
 
 	otelHandler := otelslog.NewHandler(serviceName, otelslog.WithLoggerProvider(loggerProvider))
-	stdoutHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	stdoutHandler := traceContextHandler{Handler: slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})}
 	logger := slog.New(fanoutHandler{handlers: []slog.Handler{stdoutHandler, otelHandler}})
 	slog.SetDefault(logger)
 
@@ -98,8 +102,65 @@ func (f fanoutHandler) WithGroup(name string) slog.Handler {
 	return fanoutHandler{handlers: out}
 }
 
+// stamps trace_id/span_id from the active span onto stdout records.
+type traceContextHandler struct{ slog.Handler }
+
+func (h traceContextHandler) Handle(ctx context.Context, r slog.Record) error {
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		r.AddAttrs(
+			slog.String("trace_id", sc.TraceID().String()),
+			slog.String("span_id", sc.SpanID().String()),
+		)
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h traceContextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return traceContextHandler{Handler: h.Handler.WithAttrs(attrs)}
+}
+
+func (h traceContextHandler) WithGroup(name string) slog.Handler {
+	return traceContextHandler{Handler: h.Handler.WithGroup(name)}
+}
+
+func InitTracerProvider(ctx context.Context) func() {
+	exporter, err := otlptracegrpc.New(ctx)
+	if err != nil {
+		log.Fatalf("failed to create OTLP trace exporter: %v", err)
+	}
+
+	res, err := resource.New(ctx,
+		resource.WithFromEnv(),
+		resource.WithTelemetrySDK(),
+	)
+	if err != nil {
+		log.Fatalf("failed to create resource: %v", err)
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithResource(res),
+		sdktrace.WithBatcher(exporter),
+	)
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tp.Shutdown(ctx); err != nil {
+			otel.Handle(err)
+		}
+	}
+}
+
 func Run(ctx context.Context) error {
 	config.ParseFlags()
+
+	tracerShutdown := InitTracerProvider(ctx)
+	defer tracerShutdown()
 
 	logger, otelShutdown := InitLoggerProvider(ctx)
 	defer otelShutdown()
