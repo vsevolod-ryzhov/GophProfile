@@ -105,6 +105,47 @@ services:
       RABBIT_URL: "amqp://guest:guest@rabbitmq:5672/"
     restart: unless-stopped
 
+  otel-collector:
+    image: otel/opentelemetry-collector:0.143.0
+    container_name: otel-collector
+    ports:
+      - "4317:4317"
+      - "13133:13133"
+    command:
+      - "--config=/etc/otel-collector-config.yml"
+    volumes:
+      - ./otel-collector-config.yml:/etc/otel-collector-config.yml:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.6.3
+    container_name: loki
+    command:
+      - "-config.file=/etc/loki/local-config.yml"
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yml:/etc/loki/local-config.yml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.3.1
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+
 volumes:
   minio_data:
   rabbitmq_data:
+  loki-data:
+  grafana-data:
