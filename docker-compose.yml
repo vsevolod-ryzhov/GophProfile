@@ -140,9 +140,11 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     depends_on:
       - otel-collector
+      - alertmanager
     restart: unless-stopped
 
   loki:
@@ -182,6 +184,14 @@ services:
       - '16686:16686' # UI Jaeger (http://localhost:16686)
       - "4317"
 
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    restart: unless-stopped
 
 volumes:
   minio_data:
