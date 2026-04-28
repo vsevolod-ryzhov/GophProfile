@@ -130,6 +130,7 @@ services:
       - ./otel-collector-config.yml:/etc/otel-collector-config.yml:ro
     depends_on:
       - loki
+      - jaeger
     restart: unless-stopped
 
   prometheus:
@@ -168,6 +169,16 @@ services:
       - loki
       - prometheus
     restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    restart: always
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - '16686:16686' # UI Jaeger (http://localhost:16686)
+      - "4317"
 
 
 volumes:

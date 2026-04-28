@@ -27,6 +27,10 @@ exporters:
       enabled: true
   debug:
     verbosity: basic
+  otlp/traces:
+    endpoint: 'jaeger:4317'
+    tls:
+      insecure: true
 
 service:
   pipelines:
@@ -39,7 +43,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [debug, otlp/traces]
     metrics:
       receivers: [otlp]
       processors: [batch]
