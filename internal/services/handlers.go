@@ -262,7 +262,7 @@ func (h *Handler) AvatarUpload(w http.ResponseWriter, r *http.Request) {
 			"user_id", userID,
 			"err", dbErr,
 		)
-		writeJSONError(w, http.StatusBadRequest, dbErr, "")
+		writeJSONError(w, http.StatusInternalServerError, dbErr, "")
 		return
 	}
 
