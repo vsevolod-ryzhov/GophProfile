@@ -3,6 +3,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -114,12 +115,13 @@ func (f fanoutHandler) Enabled(ctx context.Context, l slog.Level) bool {
 }
 
 func (f fanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	var errs []error
 	for _, h := range f.handlers {
 		if err := h.Handle(ctx, r.Clone()); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (f fanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
