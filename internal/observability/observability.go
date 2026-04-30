@@ -51,10 +51,19 @@ func Init(ctx context.Context, serviceName string) (*slog.Logger, func(), error)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create metric exporter: %w", err)
 	}
+	httpDurationView := sdkmetric.NewView(
+		sdkmetric.Instrument{Name: "http.server.*duration*"},
+		sdkmetric.Stream{
+			Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+				Boundaries: []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
+			},
+		},
+	)
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp,
 			sdkmetric.WithInterval(15*time.Second))),
+		sdkmetric.WithView(httpDurationView),
 	)
 	otel.SetMeterProvider(mp)
 

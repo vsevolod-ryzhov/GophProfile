@@ -25,7 +25,8 @@ func NewAvatarMetrics() (*Avatars, error) {
 	}
 	dur, err := m.Float64Histogram("avatars_upload_duration_seconds",
 		metric.WithDescription("Avatar upload duration"),
-		metric.WithUnit("s"))
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60))
 	if err != nil {
 		return nil, err
 	}
