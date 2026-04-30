@@ -3,7 +3,7 @@ groups:
     rules:
       - alert: HighErrorRate
         expr: |
-          sum(rate(avatars_uploads_total{status="error"}[5m]))
+          sum(rate(avatars_uploads_total{status!="success"}[5m]))
           /
           sum(rate(avatars_uploads_total[5m])) > 0.1
         for: 5m
