@@ -2,7 +2,7 @@ version: '3.9'
 
 services:
   postgres:
-    image: postgres:latest
+    image: postgres:18.0
     container_name: gophProfile_postgres_container
     environment:
       POSTGRES_USER: postgres_user
@@ -18,7 +18,7 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: gophProfile_minio_container
     command: server /data --console-address ":9001"
     environment:
@@ -175,7 +175,7 @@ services:
     restart: unless-stopped
 
   jaeger:
-    image: jaegertracing/all-in-one:latest
+    image: jaegertracing/all-in-one:1.62.0
     container_name: jaeger
     restart: always
     environment:
