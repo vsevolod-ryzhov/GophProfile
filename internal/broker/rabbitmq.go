@@ -41,9 +41,9 @@ func (c amqpHeaderCarrier) Keys() []string {
 
 var _ propagation.TextMapCarrier = amqpHeaderCarrier(nil)
 
-// startConsumerSpan extracts the upstream trace context from the message headers.
+// extractContext returns parent with the upstream trace context from the message headers attached.
 // The handler is expected to start its own processing span using the returned context — that way the span lifetime tracks message handling.
-func startConsumerSpan(parent context.Context, msg amqp.Delivery) context.Context {
+func extractContext(parent context.Context, msg amqp.Delivery) context.Context {
 	carrier := amqpHeaderCarrier(msg.Headers)
 	if carrier == nil {
 		carrier = amqpHeaderCarrier{}
@@ -314,7 +314,7 @@ func (c *RabbitConsumer) ConsumeDeletes(ctx context.Context) (<-chan DeleteDeliv
 				msg.Nack(false, false)
 				return true
 			}
-			msgCtx := startConsumerSpan(ctx, msg)
+			msgCtx := extractContext(ctx, msg)
 			d := DeleteDelivery{
 				Context: msgCtx,
 				Event:   event,
@@ -346,7 +346,7 @@ func (c *RabbitConsumer) ConsumeUploads(ctx context.Context) (<-chan UploadDeliv
 				msg.Nack(false, false)
 				return true
 			}
-			msgCtx := startConsumerSpan(ctx, msg)
+			msgCtx := extractContext(ctx, msg)
 			d := UploadDelivery{
 				Context: msgCtx,
 				Event:   event,
