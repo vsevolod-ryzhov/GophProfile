@@ -113,12 +113,8 @@ func run(ctx context.Context, logger *slog.Logger, metrics *observability.Avatar
 	}
 }
 
-func processSpan(ctx context.Context, name string) (context.Context, trace.Span) {
-	return otel.Tracer("worker").Start(ctx, name, trace.WithSpanKind(trace.SpanKindConsumer))
-}
-
 func handleDelete(logger *slog.Logger, fileStore filestorage.FileStorage, del broker.DeleteDelivery) {
-	ctx, span := processSpan(del.Context, "process_delete")
+	ctx, span := otel.Tracer("worker").Start(del.Context, "process_delete", trace.WithSpanKind(trace.SpanKindConsumer))
 	defer span.End()
 	span.SetAttributes(attribute.String("avatar.id", del.Event.AvatarID))
 
@@ -164,7 +160,7 @@ func failTransient(ctx context.Context, log *slog.Logger, repo storage.Storage, 
 }
 
 func handleUpload(logger *slog.Logger, fileStore filestorage.FileStorage, repo storage.Storage, metrics *observability.Avatars, upl broker.UploadDelivery) {
-	ctx, span := processSpan(upl.Context, "process_upload")
+	ctx, span := otel.Tracer("worker").Start(upl.Context, "process_upload", trace.WithSpanKind(trace.SpanKindConsumer))
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("avatar.id", upl.Event.AvatarID),
