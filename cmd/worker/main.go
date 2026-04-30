@@ -181,7 +181,9 @@ func handleUpload(logger *slog.Logger, fileStore filestorage.FileStorage, repo s
 	if err != nil {
 		log.ErrorContext(ctx, "failed to load avatar", "err", err)
 		span.RecordError(err)
-		upl.Nack()
+		if nackErr := upl.Nack(); nackErr != nil {
+			log.ErrorContext(ctx, "failed to nack message", "err", nackErr)
+		}
 		return
 	}
 	if avatar.ProcessingStatus == "completed" {
@@ -194,7 +196,9 @@ func handleUpload(logger *slog.Logger, fileStore filestorage.FileStorage, repo s
 
 	if err := repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "processing"); err != nil {
 		log.ErrorContext(ctx, "failed to set processing status", "err", err)
-		upl.Nack()
+		if nackErr := upl.Nack(); nackErr != nil {
+			log.ErrorContext(ctx, "failed to nack message", "err", nackErr)
+		}
 		return
 	}
 
@@ -249,7 +253,9 @@ func handleUpload(logger *slog.Logger, fileStore filestorage.FileStorage, repo s
 	if err := repo.UpdateProcessingStatus(ctx, upl.Event.AvatarID, "completed"); err != nil {
 		log.ErrorContext(ctx, "failed to set completed status", "err", err)
 		span.RecordError(err)
-		upl.Nack()
+		if nackErr := upl.Nack(); nackErr != nil {
+			log.ErrorContext(ctx, "failed to nack message", "err", nackErr)
+		}
 		return
 	}
 
