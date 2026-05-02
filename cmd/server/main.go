@@ -4,18 +4,32 @@ import (
 	"GophProfile/internal/broker"
 	"GophProfile/internal/config"
 	"GophProfile/internal/filestorage"
+	"GophProfile/internal/observability"
 	"GophProfile/internal/services"
 	"GophProfile/internal/storage"
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 	"os/signal"
 	"syscall"
-
-	"go.uber.org/zap"
 )
 
-func Run(ctx context.Context, logger *zap.Logger) error {
+const serviceName = "GophProfile"
+
+func Run(ctx context.Context) error {
 	config.ParseFlags()
+
+	logger, shutdown, err := observability.Init(ctx, serviceName)
+	if err != nil {
+		return fmt.Errorf("init observability: %w", err)
+	}
+	defer shutdown()
+
+	metrics, err := observability.NewAvatarMetrics()
+	if err != nil {
+		return fmt.Errorf("init metrics: %w", err)
+	}
 
 	repo, storageErr := storage.NewPostgresStorage(config.Options.DatabaseDSN)
 	if storageErr != nil {
@@ -43,28 +57,17 @@ func Run(ctx context.Context, logger *zap.Logger) error {
 		AppPort:  config.Options.AppPort,
 		CertFile: config.Options.CertFile,
 		KeyFile:  config.Options.KeyFile,
-	}, logger)
+	}, logger, metrics)
 
-	serverErr := server.Start(ctx, repo, fileStore, pub)
-	if serverErr != nil {
-		return serverErr
-	}
-
-	return nil
+	return server.Start(ctx, repo, fileStore, pub)
 }
 
 func main() {
-	log, err := zap.NewDevelopment()
-
-	if err != nil {
-		panic(err)
-	}
-	defer log.Sync()
-
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if errRun := Run(ctx, log); errRun != nil {
-		log.Fatal(errRun.Error())
+	if err := Run(ctx); err != nil {
+		slog.ErrorContext(ctx, "server exited with error", "err", err)
+		os.Exit(1)
 	}
 }

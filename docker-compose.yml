@@ -2,7 +2,7 @@ version: '3.9'
 
 services:
   postgres:
-    image: postgres:latest
+    image: postgres:18.0
     container_name: gophProfile_postgres_container
     environment:
       POSTGRES_USER: postgres_user
@@ -18,7 +18,7 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: gophProfile_minio_container
     command: server /data --console-address ":9001"
     environment:
@@ -66,6 +66,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     environment:
       SERVER_ADDRESS: "0.0.0.0:8080"
       DATABASE_DSN: "host=postgres user=postgres_user password=postgres_password dbname=postgres_db sslmode=disable"
@@ -76,6 +78,10 @@ services:
       MINIO_SECRET_KEY: "minio_password"
       MINIO_BUCKET: "goph-profile"
       RABBIT_URL: "amqp://guest:guest@rabbitmq:5672/"
+      OTEL_SERVICE_NAME: "GophProfile"
+      OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=development"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
     volumes:
       - ./crt:/certs:ro
     ports:
@@ -89,13 +95,6 @@ services:
       args:
         CMD: worker
     container_name: gophProfile_worker
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
     environment:
       DATABASE_DSN: "host=postgres user=postgres_user password=postgres_password dbname=postgres_db sslmode=disable"
       MINIO_ENDPOINT: "minio:9000"
@@ -103,8 +102,100 @@ services:
       MINIO_SECRET_KEY: "minio_password"
       MINIO_BUCKET: "goph-profile"
       RABBIT_URL: "amqp://guest:guest@rabbitmq:5672/"
+      OTEL_SERVICE_NAME: "GophProfile-worker"
+      OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=development"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.143.0
+    container_name: otel-collector
+    ports:
+      - "4317:4317"
+      - "8889:8889"
+      - "13133:13133"
+    command:
+      - "--config=/etc/otel-collector-config.yml"
+    volumes:
+      - ./otel-collector-config.yml:/etc/otel-collector-config.yml:ro
+    depends_on:
+      - loki
+      - jaeger
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.6.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - otel-collector
+      - alertmanager
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.6.3
+    container_name: loki
+    command:
+      - "-config.file=/etc/loki/local-config.yml"
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yml:/etc/loki/local-config.yml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.3.1
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - loki
+      - prometheus
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: jaeger
+    restart: always
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - '16686:16686' # UI Jaeger (http://localhost:16686)
+      - "4317"
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     restart: unless-stopped
 
 volumes:
   minio_data:
   rabbitmq_data:
+  loki-data:
+  grafana-data:
+  prometheus-data:

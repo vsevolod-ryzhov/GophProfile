@@ -8,9 +8,48 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	amqp "github.com/rabbitmq/amqp091-go"
-	"go.uber.org/zap"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
+	"go.opentelemetry.io/otel/trace"
 )
+
+const tracerName = "broker/rabbitmq"
+
+// amqpHeaderCarrier adapts amqp.Table to the TextMapCarrier interface so the W3C trace context can ride along in message headers.
+type amqpHeaderCarrier amqp.Table
+
+func (c amqpHeaderCarrier) Get(key string) string {
+	if v, ok := c[key].(string); ok {
+		return v
+	}
+	return ""
+}
+func (c amqpHeaderCarrier) Set(key, value string) { c[key] = value }
+func (c amqpHeaderCarrier) Keys() []string {
+	keys := make([]string, 0, len(c))
+	for k := range c {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+var _ propagation.TextMapCarrier = amqpHeaderCarrier(nil)
+
+// extractContext returns parent with the upstream trace context from the message headers attached.
+// The handler is expected to start its own processing span using the returned context — that way the span lifetime tracks message handling.
+func extractContext(parent context.Context, msg amqp.Delivery) context.Context {
+	carrier := amqpHeaderCarrier(msg.Headers)
+	if carrier == nil {
+		carrier = amqpHeaderCarrier{}
+	}
+	return otel.GetTextMapPropagator().Extract(parent, carrier)
+}
 
 const (
 	exchangeName = "avatars.exchange"
@@ -24,12 +63,10 @@ const (
 	reconnectMaxDelay  = 30 * time.Second
 )
 
-// ErrBrokerUnavailable is returned by Publish* when the broker is disconnected and
-// the reconnect loop has not yet restored the channel.
+// ErrBrokerUnavailable is returned by Publish* when the broker is disconnected and the reconnect loop has not yet restored the channel.
 var ErrBrokerUnavailable = errors.New("rabbitmq broker unavailable")
 
-// topologyFunc declares exchange/queues/bindings on a freshly opened channel.
-// Called on every (re)connect so the broker comes up to spec even after a restart.
+// topologyFunc declares exchange/queues/bindings on a freshly opened channel. Called on every (re)connect so the broker comes up to spec even after a restart.
 type topologyFunc func(ch *amqp.Channel) error
 
 func declarePublisherTopology(ch *amqp.Channel) error {
@@ -59,7 +96,7 @@ func declareConsumerTopology(ch *amqp.Channel) error {
 type connection struct {
 	url      string
 	topology topologyFunc
-	logger   *zap.Logger
+	logger   *slog.Logger
 
 	mu   sync.RWMutex
 	conn *amqp.Connection
@@ -70,9 +107,9 @@ type connection struct {
 	wg     sync.WaitGroup
 }
 
-func newConnection(url string, topology topologyFunc, logger *zap.Logger) (*connection, error) {
+func newConnection(url string, topology topologyFunc, logger *slog.Logger) (*connection, error) {
 	if logger == nil {
-		logger = zap.NewNop()
+		logger = slog.New(slog.DiscardHandler)
 	}
 	c := &connection{
 		url:      url,
@@ -142,7 +179,7 @@ func (c *connection) watchdog() {
 				// Graceful close — either Close() ran or the broker sent a normal shutdown.
 				return
 			}
-			c.logger.Warn("rabbitmq connection lost", zap.Error(err))
+			c.logger.Warn("rabbitmq connection lost", "err", err)
 		}
 
 		delay := reconnectBaseDelay
@@ -153,7 +190,7 @@ func (c *connection) watchdog() {
 			case <-time.After(delay):
 			}
 			if err := c.dial(); err != nil {
-				c.logger.Warn("rabbitmq reconnect failed", zap.Duration("retry_in", delay), zap.Error(err))
+				c.logger.Warn("rabbitmq reconnect failed", "retry_in", delay, "err", err)
 				delay *= 2
 				if delay > reconnectMaxDelay {
 					delay = reconnectMaxDelay
@@ -198,7 +235,7 @@ type RabbitPublisher struct {
 	*connection
 }
 
-func NewRabbitPublisher(url string, logger *zap.Logger) (*RabbitPublisher, error) {
+func NewRabbitPublisher(url string, logger *slog.Logger) (*RabbitPublisher, error) {
 	c, err := newConnection(url, declarePublisherTopology, logger)
 	if err != nil {
 		return nil, err
@@ -214,7 +251,24 @@ func (p *RabbitPublisher) PublishUpload(ctx context.Context, event AvatarUploadE
 	return p.publish(ctx, uploadKey, event)
 }
 
-func (p *RabbitPublisher) publish(ctx context.Context, routingKey string, event any) error {
+func (p *RabbitPublisher) publish(ctx context.Context, routingKey string, event any) (err error) {
+	ctx, span := otel.Tracer(tracerName).Start(ctx, "rabbitmq.publish "+routingKey,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			semconv.MessagingSystemKey.String("rabbitmq"),
+			semconv.MessagingDestinationName(exchangeName),
+			attribute.String("messaging.rabbitmq.routing_key", routingKey),
+			attribute.String("messaging.operation", "publish"),
+		),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	body, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
@@ -223,9 +277,14 @@ func (p *RabbitPublisher) publish(ctx context.Context, routingKey string, event 
 	if ch == nil {
 		return ErrBrokerUnavailable
 	}
+
+	headers := amqp.Table{}
+	otel.GetTextMapPropagator().Inject(ctx, amqpHeaderCarrier(headers))
+
 	return ch.PublishWithContext(ctx, exchangeName, routingKey, false, false, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Persistent,
+		Headers:      headers,
 		Body:         body,
 	})
 }
@@ -235,7 +294,7 @@ type RabbitConsumer struct {
 	*connection
 }
 
-func NewRabbitConsumer(url string, logger *zap.Logger) (*RabbitConsumer, error) {
+func NewRabbitConsumer(url string, logger *slog.Logger) (*RabbitConsumer, error) {
 	c, err := newConnection(url, declareConsumerTopology, logger)
 	if err != nil {
 		return nil, err
@@ -255,10 +314,12 @@ func (c *RabbitConsumer) ConsumeDeletes(ctx context.Context) (<-chan DeleteDeliv
 				msg.Nack(false, false)
 				return true
 			}
+			msgCtx := extractContext(ctx, msg)
 			d := DeleteDelivery{
-				Event: event,
-				Ack:   func() error { return msg.Ack(false) },
-				Nack:  func() error { return msg.Nack(false, true) },
+				Context: msgCtx,
+				Event:   event,
+				Ack:     func() error { return msg.Ack(false) },
+				Nack:    func() error { return msg.Nack(false, true) },
 			}
 			select {
 			case out <- d:
@@ -285,10 +346,12 @@ func (c *RabbitConsumer) ConsumeUploads(ctx context.Context) (<-chan UploadDeliv
 				msg.Nack(false, false)
 				return true
 			}
+			msgCtx := extractContext(ctx, msg)
 			d := UploadDelivery{
-				Event: event,
-				Ack:   func() error { return msg.Ack(false) },
-				Nack:  func() error { return msg.Nack(false, true) },
+				Context: msgCtx,
+				Event:   event,
+				Ack:     func() error { return msg.Ack(false) },
+				Nack:    func() error { return msg.Nack(false, true) },
 			}
 			select {
 			case out <- d:
@@ -325,7 +388,7 @@ func (c *RabbitConsumer) consumeLoop(ctx context.Context, queue string, handle f
 
 		msgs, err := ch.ConsumeWithContext(ctx, queue, "", false, false, false, false, nil)
 		if err != nil {
-			c.logger.Warn("failed to start consuming", zap.String("queue", queue), zap.Error(err))
+			c.logger.Warn("failed to start consuming", "queue", queue, "err", err)
 			if !sleep(ctx, c.done, reconnectBaseDelay) {
 				return
 			}

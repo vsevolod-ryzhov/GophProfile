@@ -15,10 +15,14 @@ import (
 
 	"GophProfile/internal/broker"
 	"GophProfile/internal/filestorage"
+	"GophProfile/internal/observability"
 	"GophProfile/internal/storage"
 
+	"log/slog"
+
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 const (
@@ -72,11 +76,12 @@ type Handler struct {
 	storage     storage.Storage
 	fileStorage filestorage.FileStorage
 	publisher   broker.Publisher
-	logger      *zap.Logger
+	logger      *slog.Logger
+	metrics     *observability.Avatars
 }
 
-func NewHandler(s storage.Storage, fs filestorage.FileStorage, pub broker.Publisher, logger *zap.Logger) *Handler {
-	return &Handler{storage: s, fileStorage: fs, publisher: pub, logger: logger}
+func NewHandler(s storage.Storage, fs filestorage.FileStorage, pub broker.Publisher, logger *slog.Logger, metrics *observability.Avatars) *Handler {
+	return &Handler{storage: s, fileStorage: fs, publisher: pub, logger: logger, metrics: metrics}
 }
 
 type healthResponse struct {
@@ -87,6 +92,8 @@ type healthResponse struct {
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
+
+	h.logger.InfoContext(ctx, "Health check")
 
 	resp := healthResponse{
 		Status:     "ok",
@@ -128,9 +135,9 @@ func (h *Handler) AvatarInfo(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusNotFound, errs.AvatarNotFound, "")
 			return
 		}
-		h.logger.Error("failed to get avatar",
-			zap.String("avatar_id", avatarID),
-			zap.Error(err),
+		h.logger.ErrorContext(r.Context(), "failed to get avatar",
+			"avatar_id", avatarID,
+			"err", err,
 		)
 		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
 		return
@@ -181,9 +188,9 @@ func (h *Handler) AvatarsListByUser(w http.ResponseWriter, r *http.Request) {
 
 	avatars, err := h.storage.ListAvatarsByUserID(r.Context(), urlUserID)
 	if err != nil {
-		h.logger.Error("failed to list avatars",
-			zap.String("user_id", urlUserID),
-			zap.Error(err),
+		h.logger.ErrorContext(r.Context(), "failed to list avatars",
+			"user_id", urlUserID,
+			"err", err,
 		)
 		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
 		return
@@ -218,68 +225,81 @@ func (h *Handler) AvatarsListByUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AvatarUpload(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	status := "ok"
+	defer func() {
+		h.metrics.UploadsTotal.Add(r.Context(), 1, metric.WithAttributes(attribute.String("status", status)))
+		h.metrics.UploadDuration.Record(r.Context(), time.Since(start).Seconds(), metric.WithAttributes(attribute.String("status", status)))
+	}()
+
 	userID, usrErr := extractUserID(r)
 	if usrErr != nil {
+		status = "bad_request"
 		writeJSONError(w, http.StatusBadRequest, usrErr, "")
 		return
 	}
 
 	upload, uploadErr := readUploadedFile(w, r)
 	if uploadErr != nil {
-		h.logger.Warn("avatar upload rejected",
-			zap.String("user_id", userID),
-			zap.Error(uploadErr),
+		status = "rejected"
+		h.logger.WarnContext(r.Context(), "avatar upload rejected",
+			"user_id", userID,
+			"err", uploadErr,
 		)
 
-		status := http.StatusBadRequest
+		httpStatus := http.StatusBadRequest
 		if errors.Is(uploadErr, errs.FileTooLarge) {
-			status = http.StatusRequestEntityTooLarge
+			httpStatus = http.StatusRequestEntityTooLarge
 		}
-		writeJSONError(w, status, uploadErr, "")
+		writeJSONError(w, httpStatus, uploadErr, "")
 		return
 	}
 
 	avatar, dbErr := h.storage.CreateNewAvatarRecord(r.Context(), userID, upload.FileName, upload.MIMEType, upload.Size)
 	if dbErr != nil {
-		h.logger.Warn("avatar upload rejected",
-			zap.String("user_id", userID),
-			zap.Error(dbErr),
+		status = "db_error"
+		h.logger.WarnContext(r.Context(), "avatar upload rejected",
+			"user_id", userID,
+			"err", dbErr,
 		)
-		status := http.StatusBadRequest
-		writeJSONError(w, status, dbErr, "")
+		writeJSONError(w, http.StatusInternalServerError, dbErr, "")
 		return
 	}
 
 	objectKey := fmt.Sprintf("%s/%s", userID, avatar.ID)
 	if err := h.fileStorage.Upload(r.Context(), objectKey, upload.Data); err != nil {
-		h.logger.Error("failed to upload file to storage",
-			zap.String("user_id", userID),
-			zap.String("avatar_id", avatar.ID.String()),
-			zap.Error(err),
+		status = "storage_error"
+		h.logger.ErrorContext(r.Context(), "failed to upload file to storage",
+			"user_id", userID,
+			"avatar_id", avatar.ID.String(),
+			"err", err,
 		)
 		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
 		return
 	}
 
 	if err := h.storage.UpdateAvatarS3Key(r.Context(), avatar.ID.String(), objectKey); err != nil {
-		h.logger.Error("failed to update avatar s3 key",
-			zap.String("user_id", userID),
-			zap.String("avatar_id", avatar.ID.String()),
-			zap.Error(err),
+		status = "db_error"
+		h.logger.ErrorContext(r.Context(), "failed to update avatar s3 key",
+			"user_id", userID,
+			"avatar_id", avatar.ID.String(),
+			"err", err,
 		)
 		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
 		return
 	}
+
+	h.metrics.StorageBytes.Add(r.Context(), upload.Size)
 
 	if err := h.publisher.PublishUpload(r.Context(), broker.AvatarUploadEvent{
 		AvatarID: avatar.ID.String(),
 		UserID:   userID,
 		S3Key:    objectKey,
 	}); err != nil {
-		h.logger.Error("failed to publish upload event",
-			zap.String("user_id", userID),
-			zap.String("avatar_id", avatar.ID.String()),
-			zap.Error(err),
+		h.logger.ErrorContext(r.Context(), "failed to publish upload event",
+			"user_id", userID,
+			"avatar_id", avatar.ID.String(),
+			"err", err,
 		)
 	}
 
@@ -313,9 +333,9 @@ func (h *Handler) AvatarDelete(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusNotFound, errs.AvatarNotFound, "")
 			return
 		}
-		h.logger.Error("failed to get avatar",
-			zap.String("avatar_id", avatarID),
-			zap.Error(err),
+		h.logger.ErrorContext(r.Context(), "failed to get avatar",
+			"avatar_id", avatarID,
+			"err", err,
 		)
 		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
 		return
@@ -327,13 +347,15 @@ func (h *Handler) AvatarDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.storage.SoftDeleteAvatar(r.Context(), avatarID); err != nil {
-		h.logger.Error("failed to soft-delete avatar",
-			zap.String("avatar_id", avatarID),
-			zap.Error(err),
+		h.logger.ErrorContext(r.Context(), "failed to soft-delete avatar",
+			"avatar_id", avatarID,
+			"err", err,
 		)
 		writeJSONError(w, http.StatusInternalServerError, errs.InternalError, "")
 		return
 	}
+
+	h.metrics.StorageBytes.Add(r.Context(), -avatar.SizeBytes)
 
 	s3Keys := make([]string, 0, 1+len(avatar.ThumbnailS3Keys))
 	if avatar.S3Key != "" {
@@ -344,9 +366,9 @@ func (h *Handler) AvatarDelete(w http.ResponseWriter, r *http.Request) {
 		AvatarID: avatarID,
 		S3Keys:   s3Keys,
 	}); err != nil {
-		h.logger.Error("failed to publish delete event",
-			zap.String("avatar_id", avatarID),
-			zap.Error(err),
+		h.logger.ErrorContext(r.Context(), "failed to publish delete event",
+			"avatar_id", avatarID,
+			"err", err,
 		)
 	}
 

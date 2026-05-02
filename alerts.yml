@@ -1,0 +1,24 @@
+groups:
+  - name: avatar-service
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(avatars_uploads_total{status!="ok"}[5m]))
+          /
+          sum(rate(avatars_uploads_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Avatar upload error rate >10% for 5 minutes"
+
+      - alert: HighResponseTime
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(avatars_upload_duration_seconds_bucket[5m]))
+          ) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Avatar upload p95 latency >5s for 2 minutes"
