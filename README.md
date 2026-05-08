@@ -9,6 +9,8 @@
 ## OK
 ```shell
 curl -v --cacert crt/ca.crt -H "X-User-ID: test-user-1" -F "image=@test-data/example1.jpg" https://localhost:8080/api/v1/avatars
+
+curl -v -H "X-User-ID: test-user-1" -F "image=@test-data/example1.jpg" http://gophprofile.localhost/api/v1/avatars
 ```
 
 ## Missing header

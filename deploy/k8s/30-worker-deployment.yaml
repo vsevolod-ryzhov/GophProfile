@@ -23,6 +23,9 @@ spec:
         - name: worker
           image: docker.io/library/gophprofile-worker:dev
           imagePullPolicy: Never
+          ports:
+            - name: metrics
+              containerPort: 9464
           envFrom:
             - configMapRef:
                 name: gophprofile-worker-config

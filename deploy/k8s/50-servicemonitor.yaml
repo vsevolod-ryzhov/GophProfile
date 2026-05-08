@@ -1,0 +1,40 @@
+# Requires the Prometheus Operator CRDs (kube-prometheus-stack).
+# See deploy/k8s/README.md for the install command.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gophprofile-server
+  namespace: gophprofile
+  labels:
+    # kube-prometheus-stack's default Prometheus selects ServiceMonitors with `release: <helm-release-name>`. We use `kube-prometheus-stack` below.
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames: [gophprofile]
+  selector:
+    matchLabels:
+      app: gophprofile-server
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gophprofile-worker
+  namespace: gophprofile
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames: [gophprofile]
+  selector:
+    matchLabels:
+      app: gophprofile-worker
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
