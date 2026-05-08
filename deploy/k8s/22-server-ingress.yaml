@@ -1,0 +1,24 @@
+# Rancher Desktop ships Traefik as the default IngressClass.
+# For nginx-ingress, switch the class and re-add proxy-body-size annotation.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gophprofile
+  namespace: gophprofile
+  annotations:
+    # nginx-ingress equivalent:
+    # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: gophprofile.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gophprofile-server
+                port:
+                  number: 80

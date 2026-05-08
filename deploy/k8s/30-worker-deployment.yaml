@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gophprofile-worker
+  namespace: gophprofile
+  labels:
+    app: gophprofile-worker
+    component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gophprofile-worker
+  template:
+    metadata:
+      labels:
+        app: gophprofile-worker
+        component: worker
+    spec:
+      # Worker may be processing a thumbnail when SIGTERM arrives — give it room.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: worker
+          image: docker.io/library/gophprofile-worker:dev
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: gophprofile-worker-config
+            - secretRef:
+                name: gophprofile-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
