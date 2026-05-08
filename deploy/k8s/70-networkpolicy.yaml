@@ -1,0 +1,144 @@
+# NetworkPolicies for the gophprofile namespace.
+# Strategy: default-deny all ingress and egress in the namespace, then allow only the flows we need. Selectors use the well-known `kubernetes.io/metadata.name` namespace label, which Kubernetes >= 1.22 sets automatically on every namespace.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: gophprofile
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Every pod must be able to resolve DNS via kube-system/CoreDNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: gophprofile
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# Server ingress: HTTP from the ingress controller, metrics from Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: server-ingress
+  namespace: gophprofile
+spec:
+  podSelector:
+    matchLabels:
+      app: gophprofile-server
+  policyTypes: [Ingress]
+  ingress:
+    # HTTP from the ingress controller. Traefik runs in kube-system on Rancher Desktop;
+    # for nginx-ingress, change to `ingress-nginx`.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - { protocol: TCP, port: 8080 }
+    # /metrics from kube-prometheus-stack (default install namespace: monitoring).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - { protocol: TCP, port: 9464 }
+---
+# Worker ingress: only Prometheus scraping /metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-ingress
+  namespace: gophprofile
+spec:
+  podSelector:
+    matchLabels:
+      app: gophprofile-worker
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - { protocol: TCP, port: 9464 }
+---
+# Server + worker egress to in-namespace dependencies (Postgres, MinIO, RabbitMQ).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-egress-to-infra
+  namespace: gophprofile
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [gophprofile-server, gophprofile-worker] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: postgres }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - podSelector:
+            matchLabels: { app: minio }
+      ports:
+        - { protocol: TCP, port: 9000 }
+    - to:
+        - podSelector:
+            matchLabels: { app: rabbitmq }
+      ports:
+        - { protocol: TCP, port: 5672 }
+---
+# Egress to the OpenTelemetry Collector in the monitoring namespace (OTLP gRPC + HTTP).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-egress-to-otel
+  namespace: gophprofile
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [gophprofile-server, gophprofile-worker] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - { protocol: TCP, port: 4317 }
+        - { protocol: TCP, port: 4318 }
+---
+# Infra pods need to accept connections from the app pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: infra-ingress-from-app
+  namespace: gophprofile
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [postgres, minio, rabbitmq] }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [gophprofile-server, gophprofile-worker] }

@@ -22,12 +22,27 @@ spec:
         app: gophprofile-server
         component: server
     spec:
+      serviceAccountName: gophprofile-server
+      automountServiceAccountToken: false
       # Must exceed the in-app Shutdown() timeout (30s) so in-flight requests drain.
       terminationGracePeriodSeconds: 45
+      # Distroless nonroot image runs as UID 65532 — make it explicit and enforce non-root at the pod level.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: server
           image: docker.io/library/gophprofile-server:dev
           imagePullPolicy: Never
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: http
               containerPort: 8080
