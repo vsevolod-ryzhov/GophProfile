@@ -1,0 +1,133 @@
+# Default values — sized for local Rancher Desktop (dev).
+# Override per environment via -f values-prod.yaml.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  registry: docker.io/library
+  serverRepository: gophprofile-server
+  workerRepository: gophprofile-worker
+  tag: dev
+  pullPolicy: Never   # for prod: IfNotPresent or Always
+  pullSecrets: []
+
+server:
+  replicaCount: 2
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+  terminationGracePeriodSeconds: 45
+  containerPort: 8080
+  metricsPort: 9464
+  service:
+    type: ClusterIP
+    httpPort: 80
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+worker:
+  replicaCount: 1
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+  terminationGracePeriodSeconds: 60
+  metricsPort: 9464
+  hpa:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+
+# Pod-level security defaults — match the distroless `nonroot` image (UID 65532).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+  host: gophprofile.localhost
+  path: /
+  pathType: Prefix
+  tls: []
+  # nginx-ingress example:
+  # className: nginx
+  # annotations:
+  #   nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+# Non-secret app config (rendered into a ConfigMap).
+config:
+  SERVER_ADDRESS: "0.0.0.0:8080"
+  MINIO_ENDPOINT: "minio:9000"
+  MINIO_BUCKET: "goph-profile"
+  MINIO_USE_SSL: "false"
+  OTEL_SERVICE_NAME: "GophProfile"
+  OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=kubernetes"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+
+workerConfig:
+  MINIO_ENDPOINT: "minio:9000"
+  MINIO_BUCKET: "goph-profile"
+  MINIO_USE_SSL: "false"
+  OTEL_SERVICE_NAME: "GophProfile-worker"
+  OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=kubernetes"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+
+# Secrets — for dev only. In real environments, set `secret.create: false` and reference an externally-managed Secret via `secret.existingSecret`.
+secret:
+  create: true
+  existingSecret: ""
+  data:
+    DATABASE_DSN: "host=postgres user=postgres_user password=postgres_password dbname=postgres_db sslmode=disable"
+    MINIO_ACCESS_KEY: "minio_user"
+    MINIO_SECRET_KEY: "minio_password"
+    RABBIT_URL: "amqp://guest:guest@rabbitmq:5672/"
+
+# Helm pre-install/pre-upgrade migration Job. Reuses the server image with the /app/migrate binary baked in (cmd/migrate)
+migrate:
+  enabled: true
+  image:
+    repository: gophprofile-migrate
+    tag: ""   # falls back to .Values.image.tag
+  backoffLimit: 3
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 200m, memory: 128Mi }
+
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  scrapeTimeout: 10s
+  release: kube-prometheus-stack
+
+networkPolicy:
+  enabled: true
+  # Namespaces by `kubernetes.io/metadata.name` label.
+  ingressControllerNamespaces:
+    - kube-system     # Rancher Desktop's Traefik
+    - ingress-nginx
+  monitoringNamespace: monitoring
+  # In-cluster infra pod selectors (label key/value pairs).
+  infra:
+    postgres: { app: postgres,  port: 5432 }
+    minio:    { app: minio,     port: 9000 }
+    rabbitmq: { app: rabbitmq,  port: 5672 }

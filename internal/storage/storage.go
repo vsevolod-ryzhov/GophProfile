@@ -65,6 +65,21 @@ func NewPostgresStorage(connectionString string) (*PostgresStorage, error) {
 	return &PostgresStorage{db: db}, nil
 }
 
+// ApplyMigrationsDSN opens a standalone connection, applies migrations, and closes it.
+// Used by cmd/migrate (Helm pre-install/pre-upgrade hook). The server's NewPostgresStorage
+// also runs migrations on startup as a no-op safety net when the hook has already run.
+func ApplyMigrationsDSN(dsn string) error {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("ping db: %w", err)
+	}
+	return applyMigrations(db)
+}
+
 func applyMigrations(db *sql.DB) error {
 	driver, err := postgres.WithInstance(db, &postgres.Config{})
 	if err != nil {

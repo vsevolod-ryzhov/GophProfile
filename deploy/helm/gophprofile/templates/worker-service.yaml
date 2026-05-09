@@ -1,0 +1,16 @@
+# Headless Service so ServiceMonitor can select worker pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gophprofile.worker.name" . }}
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+    app: gophprofile-worker
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: gophprofile-worker
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - { name: metrics, port: {{ .Values.worker.metricsPort }}, targetPort: metrics }

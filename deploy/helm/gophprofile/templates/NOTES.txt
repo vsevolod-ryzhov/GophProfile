@@ -1,0 +1,16 @@
+{{ .Release.Name }} (chart {{ .Chart.Name }}-{{ .Chart.Version }}) installed in namespace "{{ .Release.Namespace }}".
+
+Server image:  {{ include "gophprofile.serverImage" . }}
+Worker image:  {{ include "gophprofile.workerImage" . }}
+{{- if .Values.migrate.enabled }}
+Migrate image: {{ include "gophprofile.migrateImage" . }} (ran as pre-install/pre-upgrade hook)
+{{- end }}
+
+Smoke test:
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "gophprofile.server.name" . }}
+{{- if .Values.ingress.enabled }}
+  curl -i http://{{ .Values.ingress.host }}/health
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "gophprofile.server.name" . }} 8080:{{ .Values.server.service.httpPort }}
+  curl -i http://localhost:8080/health
+{{- end }}
