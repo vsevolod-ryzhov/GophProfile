@@ -1,3 +1,15 @@
+# Dev-only Secret — plaintext for easy local testing on Rancher Desktop
+# For real environments, manage with sealed-secrets / external-secrets / SOPS, never commit
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-secret
+  namespace: gophprofile
+type: Opaque
+stringData:
+  MINIO_ROOT_USER: "minio_user"
+  MINIO_ROOT_PASSWORD: "minio_password"
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -28,9 +40,9 @@ spec:
         - name: minio
           image: minio/minio:RELEASE.2025-09-07T16-13-09Z
           args: ["server", "/data", "--console-address", ":9001"]
-          env:
-            - { name: MINIO_ROOT_USER, value: minio_user }
-            - { name: MINIO_ROOT_PASSWORD, value: minio_password }
+          envFrom:
+            - secretRef:
+                name: minio-secret
           ports:
             - { name: api, containerPort: 9000 }
             - { name: console, containerPort: 9001 }

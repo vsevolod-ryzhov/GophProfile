@@ -1,3 +1,16 @@
+# Dev-only Secret — plaintext for easy local testing on Rancher Desktop
+# For real environments, manage with sealed-secrets / external-secrets / SOPS, never commit
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: gophprofile
+type: Opaque
+stringData:
+  POSTGRES_USER: "postgres_user"
+  POSTGRES_PASSWORD: "postgres_password"
+  POSTGRES_DB: "postgres_db"
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -27,19 +40,23 @@ spec:
       containers:
         - name: postgres
           image: postgres:18.0
+          envFrom:
+            - secretRef:
+                name: postgres-secret
           env:
-            - { name: POSTGRES_USER, value: postgres_user }
-            - { name: POSTGRES_PASSWORD, value: postgres_password }
-            - { name: POSTGRES_DB, value: postgres_db }
             - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
           ports:
             - containerPort: 5432
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+          # Probe via shell so $POSTGRES_USER / $POSTGRES_DB resolve from the Secret — avoids hard-coding the same values in two places
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", "postgres_user", "-d", "postgres_db"]
+              command:
+                - sh
+                - -c
+                - 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
             periodSeconds: 5
       volumes:
         - name: data
