@@ -1,0 +1,16 @@
+{{- if .Values.grafanaDashboards.enabled }}
+# Loads every JSON in `dashboards/` (a symlink to `grafana/dashboards/`) into a ConfigMap labelled `grafana_dashboard: "1"`, which the kube-prometheus-stack Grafana sidecar auto-discovers and imports.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gophprofile.fullname" . }}-grafana-dashboards
+  namespace: {{ .Values.grafanaDashboards.namespace | default "monitoring" }}
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+    {{ .Values.grafanaDashboards.sidecarLabel }}: {{ .Values.grafanaDashboards.sidecarLabelValue | quote }}
+data:
+{{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}

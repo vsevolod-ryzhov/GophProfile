@@ -1,0 +1,17 @@
+# Headless Service — exists only so Prometheus / ServiceMonitor have a stable selector for worker pods. The worker doesn't accept inbound app traffic.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gophprofile-worker
+  namespace: gophprofile
+  labels:
+    app: gophprofile-worker
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: gophprofile-worker
+  ports:
+    - name: metrics
+      port: 9464
+      targetPort: metrics

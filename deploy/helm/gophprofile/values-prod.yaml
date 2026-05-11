@@ -1,0 +1,60 @@
+# Production overlay. Pass with: helm upgrade ... -f values-prod.yaml
+#
+# Tweaks vs. defaults:
+#  - registry-pulled images, tagged by release version (override --set image.tag=...)
+#  - more replicas + tighter HPA bounds
+#  - external Secret (sealed-secrets / external-secrets / SOPS) instead of inline data
+#  - real ingress host with nginx-ingress + TLS
+
+image:
+  registry: registry.example.com/gophprofile
+  serverRepository: server
+  workerRepository: worker
+  pullPolicy: IfNotPresent
+  pullSecrets:
+    - name: registry-creds
+
+server:
+  replicaCount: 3
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits:   { cpu: "1",  memory: 1Gi }
+  hpa:
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 65
+
+worker:
+  replicaCount: 2
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits:   { cpu: "1",  memory: 1Gi }
+  hpa:
+    minReplicas: 2
+    maxReplicas: 10
+
+ingress:
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  host: gophprofile.example.com
+  tls:
+    - hosts: [gophprofile.example.com]
+      secretName: gophprofile-tls
+
+# Don't render a Secret from values; reference an externally-managed one.
+secret:
+  create: false
+  existingSecret: gophprofile-secrets
+
+config:
+  OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=production"
+
+workerConfig:
+  OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=production"
+
+migrate:
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }

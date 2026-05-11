@@ -1,6 +1,7 @@
 package main
 
 import (
+	"GophProfile/internal/breaker"
 	"GophProfile/internal/broker"
 	"GophProfile/internal/config"
 	"GophProfile/internal/filestorage"
@@ -8,12 +9,15 @@ import (
 	"GophProfile/internal/storage"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image/jpeg"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/disintegration/imaging"
 	"go.opentelemetry.io/otel"
@@ -40,12 +44,20 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	logger, shutdown, err := observability.Init(ctx, serviceName)
+	obs, err := observability.Init(ctx, serviceName)
 	if err != nil {
 		slog.ErrorContext(ctx, "init observability", "err", err)
 		os.Exit(1)
 	}
-	defer shutdown()
+	defer obs.Shutdown()
+	logger := obs.Logger
+
+	metricsSrv := startMetricsServer(ctx, logger, obs.MetricsHandler, ":9464")
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = metricsSrv.Shutdown(shutdownCtx)
+	}()
 
 	metrics, err := observability.NewAvatarMetrics()
 	if err != nil {
@@ -60,7 +72,7 @@ func main() {
 }
 
 func run(ctx context.Context, logger *slog.Logger, metrics *observability.Avatars) error {
-	fileStore, err := filestorage.NewMinioStorage(
+	minioStore, err := filestorage.NewMinioStorage(
 		config.Options.MinioEndpoint,
 		config.Options.MinioAccessKey,
 		config.Options.MinioSecretKey,
@@ -70,11 +82,21 @@ func run(ctx context.Context, logger *slog.Logger, metrics *observability.Avatar
 	if err != nil {
 		return fmt.Errorf("failed to init minio: %w", err)
 	}
+	fileStore := filestorage.NewBreakerFileStorage(minioStore, breaker.New(breaker.Settings{
+		Name:      "minio",
+		IsFailure: filestorage.IsMinioFailure,
+		Logger:    logger,
+	}))
 
-	repo, err := storage.NewPostgresStorage(config.Options.DatabaseDSN)
+	pgStore, err := storage.NewPostgresStorage(config.Options.DatabaseDSN)
 	if err != nil {
 		return fmt.Errorf("failed to init postgres: %w", err)
 	}
+	repo := storage.NewBreakerStorage(pgStore, breaker.New(breaker.Settings{
+		Name:      "postgres",
+		IsFailure: storage.IsPostgresFailure,
+		Logger:    logger,
+	}))
 
 	consumer, err := broker.NewRabbitConsumer(config.Options.RabbitURL, logger)
 	if err != nil {
@@ -263,4 +285,17 @@ func handleUpload(logger *slog.Logger, fileStore filestorage.FileStorage, repo s
 
 func attributeFor(k, v string) metric.MeasurementOption {
 	return metric.WithAttributes(attribute.String(k, v))
+}
+
+func startMetricsServer(ctx context.Context, logger *slog.Logger, h http.Handler, addr string) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", h)
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		logger.InfoContext(ctx, "starting metrics server", "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.ErrorContext(ctx, "metrics server failed", "err", err)
+		}
+	}()
+	return srv
 }

@@ -1,0 +1,75 @@
+# Dev-only Secret — plaintext for easy local testing on Rancher Desktop
+# For real environments, manage with sealed-secrets / external-secrets / SOPS, never commit
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: gophprofile
+type: Opaque
+stringData:
+  POSTGRES_USER: "postgres_user"
+  POSTGRES_PASSWORD: "postgres_password"
+  POSTGRES_DB: "postgres_db"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: gophprofile
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: gophprofile
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:18.0
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+          env:
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          # Probe via shell so $POSTGRES_USER / $POSTGRES_DB resolve from the Secret — avoids hard-coding the same values in two places
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: gophprofile
+spec:
+  selector: { app: postgres }
+  ports:
+    - port: 5432
+      targetPort: 5432

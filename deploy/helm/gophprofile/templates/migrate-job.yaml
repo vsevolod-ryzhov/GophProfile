@@ -1,0 +1,50 @@
+{{- if .Values.migrate.enabled }}
+{{- if and .Values.secret.create (not .Values.secret.existingSecret) }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "gophprofile.fullname" . }}-migrate-secret
+  labels: {{- include "gophprofile.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+type: Opaque
+stringData:
+  DATABASE_DSN: {{ .Values.secret.data.DATABASE_DSN | quote }}
+---
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "gophprofile.fullname" . }}-migrate
+  labels: {{- include "gophprofile.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "gophprofile.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: OnFailure
+      # The dedicated SAs are non-hook resources, so they don't exist yet at pre-install time. automountServiceAccountToken disables default-SA token projection — same security posture, no ordering race.
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "gophprofile.migrateImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ if .Values.secret.existingSecret }}{{ .Values.secret.existingSecret }}{{ else }}{{ include "gophprofile.fullname" . }}-migrate-secret{{ end }}
+          resources: {{- toYaml .Values.migrate.resources | nindent 12 }}
+{{- end }}

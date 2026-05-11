@@ -6,15 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -23,19 +27,26 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Init wires up tracer, meter, and logger providers, sets the global propagator, and returns a logger plus a shutdown function that flushes all three.
-func Init(ctx context.Context, serviceName string) (*slog.Logger, func(), error) {
+// Providers bundles the artifacts Init produces so callers can mount them.
+type Providers struct {
+	Logger         *slog.Logger
+	MetricsHandler http.Handler
+	Shutdown       func()
+}
+
+// Init wires up tracer, meter (OTLP push + Prometheus pull), and logger providers, sets the global propagator, and returns a Providers bundle.
+func Init(ctx context.Context, serviceName string) (*Providers, error) {
 	res, err := resource.New(ctx,
 		resource.WithFromEnv(),
 		resource.WithTelemetrySDK(),
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create resource: %w", err)
+		return nil, fmt.Errorf("create resource: %w", err)
 	}
 
 	traceExp, err := otlptracegrpc.New(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create trace exporter: %w", err)
+		return nil, fmt.Errorf("create trace exporter: %w", err)
 	}
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithResource(res),
@@ -49,7 +60,12 @@ func Init(ctx context.Context, serviceName string) (*slog.Logger, func(), error)
 
 	metricExp, err := otlpmetricgrpc.New(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create metric exporter: %w", err)
+		return nil, fmt.Errorf("create metric exporter: %w", err)
+	}
+	promRegistry := prometheus.NewRegistry()
+	promExporter, err := otelprom.New(otelprom.WithRegisterer(promRegistry))
+	if err != nil {
+		return nil, fmt.Errorf("create prometheus exporter: %w", err)
 	}
 	httpDurationView := sdkmetric.NewView(
 		sdkmetric.Instrument{Name: "http.server.*duration*"},
@@ -63,13 +79,15 @@ func Init(ctx context.Context, serviceName string) (*slog.Logger, func(), error)
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp,
 			sdkmetric.WithInterval(15*time.Second))),
+		sdkmetric.WithReader(promExporter),
 		sdkmetric.WithView(httpDurationView),
 	)
 	otel.SetMeterProvider(mp)
+	metricsHandler := promhttp.HandlerFor(promRegistry, promhttp.HandlerOpts{Registry: promRegistry})
 
 	logExp, err := otlploggrpc.New(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create log exporter: %w", err)
+		return nil, fmt.Errorf("create log exporter: %w", err)
 	}
 	lp := sdklog.NewLoggerProvider(
 		sdklog.WithResource(res),
@@ -95,7 +113,11 @@ func Init(ctx context.Context, serviceName string) (*slog.Logger, func(), error)
 		}
 	}
 
-	return logger, shutdown, nil
+	return &Providers{
+		Logger:         logger,
+		MetricsHandler: metricsHandler,
+		Shutdown:       shutdown,
+	}, nil
 }
 
 func parseLevel(s string) slog.Level {
