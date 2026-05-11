@@ -24,7 +24,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -104,7 +104,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -122,7 +122,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -201,7 +201,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "db_sql_connection_open",
@@ -217,7 +217,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -305,7 +305,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum by (le, method) (rate(db_sql_latency_milliseconds_bucket[5m])))",
@@ -320,7 +320,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -408,7 +408,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "db_sql_connection_open{status=\"inuse\"} / db_sql_connection_max_open",
@@ -423,7 +423,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
+        "uid": "${datasource}"
       },
       "fieldConfig": {
         "defaults": {
@@ -511,7 +511,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
+            "uid": "${datasource}"
           },
           "editorMode": "code",
           "expr": "rate(db_sql_connection_wait_total[5m])",
@@ -526,9 +526,36 @@
   ],
   "preload": false,
   "schemaVersion": 42,
-  "tags": ["gophprofile", "resources"],
-  "templating": { "list": [] },
-  "time": { "from": "now-6h", "to": "now" },
+  "tags": [
+    "gophprofile",
+    "resources"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "default",
+          "value": "default"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "browser",
   "title": "Resources",

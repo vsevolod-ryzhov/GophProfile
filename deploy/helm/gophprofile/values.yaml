@@ -119,6 +119,14 @@ serviceMonitor:
   scrapeTimeout: 10s
   release: kube-prometheus-stack
 
+# Grafana dashboards — packaged into a ConfigMap that the kube-prometheus-stack
+# Grafana sidecar auto-discovers by label.
+grafanaDashboards:
+  enabled: true
+  namespace: monitoring        # where Grafana (the sidecar) runs
+  sidecarLabel: grafana_dashboard
+  sidecarLabelValue: "1"
+
 networkPolicy:
   enabled: true
   # Namespaces by `kubernetes.io/metadata.name` label.

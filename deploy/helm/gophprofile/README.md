@@ -22,8 +22,12 @@ deploy/helm/gophprofile/
     ├── worker-service.yaml
     ├── hpa.yaml
     ├── servicemonitor.yaml     # toggled via serviceMonitor.enabled
+    ├── grafana-dashboards.yaml # ConfigMap loaded by the Grafana sidecar (grafanaDashboards.enabled)
     ├── networkpolicy.yaml      # toggled via networkPolicy.enabled
     └── migrate-job.yaml        # helm.sh/hook: pre-install,pre-upgrade
+
+# Source of truth for the dashboards is `grafana/dashboards/*.json`, symlinked
+# into `deploy/helm/gophprofile/dashboards/` and rendered via `.Files.Glob`.
 ```
 
 ## Build images
@@ -75,6 +79,7 @@ helm upgrade --install gophprofile deploy/helm/gophprofile \
 1. `--set image.tag=0.1.0` bump the image tag for all three images 
 2. `--set ingress.enabled=false` skip the Ingress (use port-forward) 
 3. `--set serviceMonitor.enabled=false` skip ServiceMonitor (no Prometheus Operator installed) 
+3. `--set grafanaDashboards.enabled=false` skip Grafana dashboard ConfigMap (no kube-prometheus-stack) 
 4. `--set networkPolicy.enabled=false` skip NetworkPolicies (CNI doesn't enforce) 
 5. `--set migrate.enabled=false` rely on server startup migrations only 
 6. `--set secret.existingSecret=my-secret --set secret.create=false` use a pre-existing Secret 

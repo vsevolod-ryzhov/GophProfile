@@ -18,6 +18,7 @@ deploy/k8s/
 ├── 31-worker-service.yaml     # headless Service for ServiceMonitor scraping
 ├── 40-hpa.yaml                # HPA for server (CPU 70% / mem 80%) and worker (CPU 70%)
 ├── 50-servicemonitor.yaml     # Prometheus Operator ServiceMonitor (server + worker)
+├── 51-grafana-dashboards.yaml # Grafana dashboards (sidecar auto-discovers via `grafana_dashboard: "1"`)
 ├── 60-serviceaccount.yaml     # dedicated SAs (no API access, token automount disabled)
 ├── 70-networkpolicy.yaml      # default-deny + targeted allow rules
 └── infra/                     # local-only Postgres, MinIO, RabbitMQ
@@ -124,6 +125,35 @@ curl -s http://localhost:9464/metrics | grep avatars_
 # Open the Prometheus UI and check Status → Targets for the gophprofile jobs:
 kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
 # → http://localhost:9090/targets
+```
+
+## Grafana dashboards
+
+`51-grafana-dashboards.yaml` ships the three project dashboards (`red`, `kpis`, `resources`) as a ConfigMap in the `monitoring` namespace. The kube-prometheus-stack Grafana sidecar watches for ConfigMaps labelled `grafana_dashboard: "1"` and imports them automatically.
+
+```sh
+kubectl apply -f deploy/k8s/51-grafana-dashboards.yaml
+kubectl -n monitoring get cm -l grafana_dashboard=1
+```
+
+Open Grafana → Dashboards → Browse, the three dashboards appear under the default folder:
+
+```sh
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+# default creds: admin / prom-operator
+# or get it with: kubectl -n monitoring get secret kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo
+```
+
+The JSON source of truth lives in `grafana/dashboards/`. Regenerate the manifest after edits:
+
+```sh
+kubectl create configmap gophprofile-grafana-dashboards \
+  --namespace=monitoring \
+  --from-file=red.json=grafana/dashboards/red.json \
+  --from-file=kpis.json=grafana/dashboards/kpis.json \
+  --from-file=resources.json=grafana/dashboards/resources.json \
+  --dry-run=client -o yaml > deploy/k8s/51-grafana-dashboards.yaml
+# then re-add the `grafana_dashboard: "1"` label under metadata.
 ```
 
 ## Hardening
