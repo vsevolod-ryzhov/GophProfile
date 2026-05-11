@@ -87,8 +87,13 @@ spec:
   policyTypes: [Egress]
   egress:
     {{- range $name, $cfg := .Values.networkPolicy.infra }}
+    # Both selectors in the same peer = AND: pods labelled `app=<name>` *within the release's namespace*.
+    # Without the namespaceSelector, a podSelector alone is implicitly scoped to the policy's namespace, but spelling it out keeps intent obvious and survives any future namespace-spanning refactor.
     - to:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Release.Namespace }}
+          podSelector:
             matchLabels: { app: {{ $cfg.app }} }
       ports:
         - { protocol: TCP, port: {{ $cfg.port }} }
@@ -112,4 +117,31 @@ spec:
       ports:
         - { protocol: TCP, port: 4317 }
         - { protocol: TCP, port: 4318 }
+---
+# Lock down the infra pods (Postgres, MinIO, RabbitMQ) so they only accept connections from the app pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "gophprofile.fullname" . }}-infra-ingress-from-app
+  labels: {{- include "gophprofile.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          {{- range $name, $cfg := .Values.networkPolicy.infra }}
+          - {{ $cfg.app }}
+          {{- end }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: [gophprofile-server, gophprofile-worker]
 {{- end }}

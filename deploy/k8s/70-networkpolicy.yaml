@@ -89,19 +89,29 @@ spec:
     matchExpressions:
       - { key: app, operator: In, values: [gophprofile-server, gophprofile-worker] }
   policyTypes: [Egress]
+  # Each peer pairs a namespaceSelector with a podSelector (AND semantics) so the allow rule is explicitly scoped to infra pods *in the gophprofile namespace*, even though a bare podSelector would already be namespace-local
   egress:
     - to:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gophprofile
+          podSelector:
             matchLabels: { app: postgres }
       ports:
         - { protocol: TCP, port: 5432 }
     - to:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gophprofile
+          podSelector:
             matchLabels: { app: minio }
       ports:
         - { protocol: TCP, port: 9000 }
     - to:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gophprofile
+          podSelector:
             matchLabels: { app: rabbitmq }
       ports:
         - { protocol: TCP, port: 5672 }
@@ -139,6 +149,9 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gophprofile
+          podSelector:
             matchExpressions:
               - { key: app, operator: In, values: [gophprofile-server, gophprofile-worker] }
