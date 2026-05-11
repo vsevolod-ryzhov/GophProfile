@@ -1,6 +1,7 @@
 package main
 
 import (
+	"GophProfile/internal/breaker"
 	"GophProfile/internal/broker"
 	"GophProfile/internal/config"
 	"GophProfile/internal/filestorage"
@@ -71,7 +72,7 @@ func main() {
 }
 
 func run(ctx context.Context, logger *slog.Logger, metrics *observability.Avatars) error {
-	fileStore, err := filestorage.NewMinioStorage(
+	minioStore, err := filestorage.NewMinioStorage(
 		config.Options.MinioEndpoint,
 		config.Options.MinioAccessKey,
 		config.Options.MinioSecretKey,
@@ -81,11 +82,21 @@ func run(ctx context.Context, logger *slog.Logger, metrics *observability.Avatar
 	if err != nil {
 		return fmt.Errorf("failed to init minio: %w", err)
 	}
+	fileStore := filestorage.NewBreakerFileStorage(minioStore, breaker.New(breaker.Settings{
+		Name:      "minio",
+		IsFailure: filestorage.IsMinioFailure,
+		Logger:    logger,
+	}))
 
-	repo, err := storage.NewPostgresStorage(config.Options.DatabaseDSN)
+	pgStore, err := storage.NewPostgresStorage(config.Options.DatabaseDSN)
 	if err != nil {
 		return fmt.Errorf("failed to init postgres: %w", err)
 	}
+	repo := storage.NewBreakerStorage(pgStore, breaker.New(breaker.Settings{
+		Name:      "postgres",
+		IsFailure: storage.IsPostgresFailure,
+		Logger:    logger,
+	}))
 
 	consumer, err := broker.NewRabbitConsumer(config.Options.RabbitURL, logger)
 	if err != nil {
