@@ -37,6 +37,11 @@ worker:
     limits:   { cpu: 500m, memory: 512Mi }
   terminationGracePeriodSeconds: 60
   metricsPort: 9464
+  livenessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
   hpa:
     enabled: true
     minReplicas: 1

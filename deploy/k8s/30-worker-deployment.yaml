@@ -45,6 +45,16 @@ spec:
                 name: gophprofile-worker-config
             - secretRef:
                 name: gophprofile-secrets
+          # The worker has no inbound HTTP, so we probe /metrics on the
+          # observability port — if it answers, the process is alive.
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             requests:
               cpu: "100m"
